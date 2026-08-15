@@ -361,3 +361,9 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Application Tracker local SQLite files
+ApplicationTracker/application-tracker.db
+ApplicationTracker/application-tracker.db-shm
+ApplicationTracker/application-tracker.db-wal
+ApplicationTracker/application-tracker.db*
