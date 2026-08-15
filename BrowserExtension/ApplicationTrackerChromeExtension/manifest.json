@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Application Tracker Job Capture",
+  "version": "1.0.0",
+  "description": "Capture the current rendered job posting and send it to your local Application Tracker.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "https://localhost:7248/*",
+    "http://localhost:5248/*"
+  ],
+  "action": {
+    "default_title": "Save job to Application Tracker",
+    "default_popup": "popup.html"
+  }
+}

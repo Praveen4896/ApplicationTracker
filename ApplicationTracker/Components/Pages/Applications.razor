@@ -11,7 +11,7 @@
 
 <section class="panel">
     <div class="filters">
-        <input @bind="search" @bind:event="oninput" @bind:after="LoadAsync" placeholder="Search company, position, or location…" />
+        <input @bind="search" @bind:event="oninput" @bind:after="LoadAsync" placeholder="Search company, position, location, job ID, or description…" />
         <select @bind="status" @bind:after="LoadAsync">
             <option value="">All statuses</option>
             @foreach (var value in Enum.GetValues<ApplicationStatus>()) { <option value="@value">@value</option> }
@@ -27,18 +27,95 @@
     }
     else
     {
-        <div class="table-wrap"><table>
-            <thead><tr><th>Company & position</th><th>Applied</th><th>Status</th><th>Resume</th><th></th></tr></thead>
+        <div class="table-wrap">
+            <table class="applications-table">
+                <colgroup>
+                    <col class="company-col" />
+                    <col class="applied-col" />
+                    <col class="status-col" />
+                    <col class="resume-col" />
+                    <col class="actions-col" />
+                </colgroup>
+
+                <thead>
+                    <tr>
+                        <th>Company & position</th>
+                        <th>Applied</th>
+                        <th>Status</th>
+                        <th>Resume</th>
+                        <th></th>
+                    </tr>
+                </thead>
             <tbody>
             @foreach (var item in items)
             {
-                <tr>
-                    <td><strong>@item.CompanyName</strong><small>@item.PositionTitle @(!string.IsNullOrWhiteSpace(item.Location) ? $" · {item.Location}" : "")</small></td>
-                    <td>@item.AppliedDate.ToString("MMM d, yyyy")</td>
-                    <td><span class="status status-@item.Status.ToString().ToLower()">@item.Status</span></td>
-                    <td>@(item.ResumeFileName ?? "—")</td>
-                    <td class="actions"><a href="applications/@item.Id">View</a><a href="applications/@item.Id/edit">Edit</a></td>
-                </tr>
+                        <tr>
+                            <td>
+                                <a class="application-link"
+                                   href="applications/@item.Id"
+                                   title="View application details">
+
+                                    <strong>@item.CompanyName</strong>
+
+                                    <small>
+                                        @item.PositionTitle
+                                        @(!string.IsNullOrWhiteSpace(item.Location)
+                                            ? $" · {item.Location}"
+                                            : "")
+                                    </small>
+                                </a>
+                            </td>
+
+                            <td class="applied-column">
+                                @item.AppliedDate.ToString("MMM d, yyyy")
+                            </td>
+
+                            <td class="status-column">
+                                <select class="status-select status-@item.Status.ToString().ToLower()"
+                                        value="@item.Status"
+                                        disabled="@updatingApplicationIds.Contains(item.Id)"
+                                        @onchange="eventArgs => UpdateStatusAsync(
+                                                                item,
+                                                                eventArgs.Value?.ToString())">
+
+            @foreach (var applicationStatus in Enum.GetValues<ApplicationStatus>())
+                                    {
+                                        <option value="@applicationStatus">
+                                            @applicationStatus
+                                        </option>
+                                    }
+                                </select>
+                            </td>
+
+                            <td class="resume-column">
+                                @if (!string.IsNullOrWhiteSpace(item.ResumeFileName))
+                                {
+                                    <span class="resume-file-name"
+                                          title="@item.ResumeFileName">
+                                        @item.ResumeFileName
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span>—</span>
+                                }
+                            </td>
+
+                            <td class="actions">
+                                <a href="applications/@item.Id/edit">
+                                    Edit
+                                </a>
+
+                                @if (!string.IsNullOrWhiteSpace(item.JobPostingUrl))
+                                {
+                                    <a href="@item.JobPostingUrl"
+                                       target="_blank"
+                                       rel="noopener noreferrer">
+                                        Open Job ↗
+                                    </a>
+                                }
+                            </td>
+                        </tr>
             }
             </tbody>
         </table></div>
@@ -54,5 +131,58 @@
     {
         ApplicationStatus? parsed = Enum.TryParse<ApplicationStatus>(status, out var value) ? value : null;
         items = await Service.GetAllAsync(search, parsed);
+    }
+
+    private readonly HashSet<int> updatingApplicationIds = new();
+
+    private async Task UpdateStatusAsync(
+        JobApplication application,
+        string? selectedStatus)
+    {
+        if (!Enum.TryParse<ApplicationStatus>(
+                selectedStatus,
+                true,
+                out var newStatus))
+        {
+            return;
+        }
+
+        if (application.Status == newStatus)
+        {
+            return;
+        }
+
+        var previousStatus =
+            application.Status;
+
+        application.Status =
+            newStatus;
+
+        updatingApplicationIds.Add(
+            application.Id);
+
+        try
+        {
+            var updated =
+                await Service.UpdateStatusAsync(
+                    application.Id,
+                    newStatus);
+
+            if (!updated)
+            {
+                application.Status =
+                    previousStatus;
+            }
+        }
+        catch
+        {
+            application.Status =
+                previousStatus;
+        }
+        finally
+        {
+            updatingApplicationIds.Remove(
+                application.Id);
+        }
     }
 }

@@ -1,6 +1,8 @@
 @page "/applications/new"
 @page "/applications/{Id:int}/edit"
 @inject ApplicationTracker.Data.ApplicationService Service
+@inject ApplicationTracker.Services.JobImportService ImportService
+@inject ApplicationTracker.Services.JobCaptureStore CaptureStore
 @inject NavigationManager Navigation
 
 <PageTitle>@(Id.HasValue ? "Edit" : "Add") Application | Application Tracker</PageTitle>
@@ -12,6 +14,37 @@
 <EditForm Model="model" OnValidSubmit="SaveAsync" FormName="application-form">
     <DataAnnotationsValidator />
     <ValidationSummary />
+
+    @if (!Id.HasValue)
+    {
+        <section class="panel form-section import-section">
+            <h2>Import job details</h2>
+
+            <p>
+                Paste the company or ATS job-posting URL opened from Jobright.
+            </p>
+
+            <div class="filters import-controls">
+                <InputText @bind-Value="importUrl"
+                           placeholder="Paste Hirebridge, Workday, Greenhouse, Lever, or another job URL…" />
+
+                <button type="button"
+                        class="button primary"
+                        disabled="@importing"
+                        @onclick="ImportJobAsync">
+                    @(importing ? "Importing…" : "Import details")
+                </button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(importMessage))
+            {
+                <p class="@importMessageClass">
+                    @importMessage
+                </p>
+            }
+        </section>
+    }
+
     <section class="form-layout">
         <div>
             <article class="panel form-section">
@@ -19,7 +52,7 @@
                 <div class="form-grid">
                     <label><span>Company name *</span><InputText @bind-Value="model.CompanyName" placeholder="Example: Microsoft" /><ValidationMessage For="() => model.CompanyName" /></label>
                     <label><span>Position title *</span><InputText @bind-Value="model.PositionTitle" placeholder="Example: .NET Developer" /><ValidationMessage For="() => model.PositionTitle" /></label>
-                    <label><span>Location</span><InputText @bind-Value="model.Location" placeholder="Remote or city, state" /></label>
+                    <label><span>Location</span><InputText @bind-Value="model.Location" placeholder="Remote or city, state" /><ValidationMessage For="() => model.Location" /></label>
                     <label><span>Job board</span><InputText @bind-Value="model.JobBoard" placeholder="Jobright, LinkedIn, company site…" /></label>
                     <label class="full"><span>Original job-posting link</span><InputText @bind-Value="model.JobPostingUrl" placeholder="https://…" /><ValidationMessage For="() => model.JobPostingUrl" /></label>
                     <label><span>Date applied *</span><InputDate @bind-Value="model.AppliedDate" /></label>
@@ -40,17 +73,54 @@
                 </div>
             </article>
         </div>
-        <aside>
-            <article class="panel form-section sticky">
-                <h2>Resume used</h2><p>Attach the exact version submitted for this job.</p>
+    <aside class="form-sidebar">
+        <div class="form-sidebar-sticky">
+            <article class="panel form-section">
+                <h2>Resume used</h2>
+
+                <p>
+                    Attach the exact version submitted for this job.
+                </p>
+
                 <label class="upload-box">
-                    <InputFile OnChange="UploadResumeAsync" accept=".pdf,.doc,.docx" />
-                    <span>⇧</span><strong>@(model.ResumeFileName ?? "Choose resume")</strong><small>PDF, DOC, or DOCX · max 10 MB</small>
+                    <InputFile OnChange="UploadResumeAsync"
+                               accept=".pdf,.doc,.docx" />
+
+                    <span>⇧</span>
+
+                    <strong>
+                        @(model.ResumeFileName ?? "Choose resume")
+                    </strong>
+
+                    <small>
+                        PDF, DOC, or DOCX · max 10 MB
+                    </small>
                 </label>
-                @if (!string.IsNullOrWhiteSpace(uploadError)) { <p class="error">@uploadError</p> }
+
+                @if (!string.IsNullOrWhiteSpace(uploadError))
+                {
+                    <p class="error">
+                        @uploadError
+                    </p>
+                }
             </article>
-            <div class="save-actions"><button class="button primary" type="submit" disabled="@saving">@(saving ? "Saving…" : "Save application")</button><a class="button secondary" href="applications">Cancel</a></div>
-        </aside>
+
+            <div class="save-actions">
+                <button class="button primary"
+                        type="submit"
+                        disabled="@saving">
+                    @(saving
+                        ? "Saving…"
+                        : "Save application")
+                </button>
+
+                <a class="button secondary"
+                   href="applications">
+                    Cancel
+                </a>
+            </div>
+        </div>
+    </aside>
     </section>
 </EditForm>
 
@@ -59,11 +129,42 @@
     private JobApplication model = new();
     private bool saving;
     private string? uploadError;
+    private string importUrl = string.Empty;
+    private bool importing;
+    private string? importMessage;
+    private string importMessageClass = string.Empty;
+    [SupplyParameterFromQuery(Name = "captureToken")]
+    public string? CaptureToken { get; set; }
+    private bool captureLoaded;
+
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Id.HasValue) model = await Service.GetAsync(Id.Value) ?? new JobApplication();
+        if (Id.HasValue)
+        {
+            model = await Service.GetAsync(Id.Value) ?? new JobApplication();
+            return;
+        }
+
+        if (!captureLoaded && !string.IsNullOrWhiteSpace(CaptureToken))
+        {
+            var capture = CaptureStore.Get(CaptureToken);
+            if (capture is not null)
+            {
+                model.CompanyName = capture.CompanyName ?? string.Empty;
+                model.PositionTitle = capture.PositionTitle ?? string.Empty;
+                model.Location = capture.Location;
+                model.JobBoard = capture.JobBoard;
+                model.JobPostingUrl = capture.JobPostingUrl;
+                model.JobDescription = capture.JobDescription;
+                model.AppliedDate = DateOnly.FromDateTime(DateTime.Today);
+                importMessage = "The rendered job page was captured. Review the details and attach your tailored resume.";
+                importMessageClass = "success-message";
+            }
+            captureLoaded = true;
+        }
     }
+
 
     private async Task UploadResumeAsync(InputFileChangeEventArgs e)
     {
@@ -86,5 +187,65 @@
         saving = true;
         await Service.SaveAsync(model);
         Navigation.NavigateTo($"/applications/{model.Id}");
+    }
+
+    private async Task ImportJobAsync()
+    {
+        importMessage = null;
+        importing = true;
+
+        try
+        {
+            var result = await ImportService.ImportAsync(importUrl);
+
+            if (!result.Success)
+            {
+                importMessage = result.ErrorMessage;
+                importMessageClass = "error";
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.CompanyName))
+            {
+                model.CompanyName = result.CompanyName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.PositionTitle))
+            {
+                model.PositionTitle = result.PositionTitle;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.Location))
+            {
+                model.Location = result.Location;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.JobPostingUrl))
+            {
+                model.JobPostingUrl = result.JobPostingUrl;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.JobBoard))
+            {
+                model.JobBoard = result.JobBoard;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.JobDescription))
+            {
+                model.JobDescription = result.JobDescription;
+            }
+
+            model.AppliedDate = DateOnly.FromDateTime(DateTime.Today);
+
+            importMessage = string.IsNullOrWhiteSpace(result.JobId)
+                ? "Job details imported. Please review them before saving."
+                : $"Job details imported successfully. Job ID: {result.JobId}";
+
+            importMessageClass = "success-message";
+        }
+        finally
+        {
+            importing = false;
+        }
     }
 }

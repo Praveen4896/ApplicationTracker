@@ -1,5 +1,6 @@
 using ApplicationTracker.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 
 namespace ApplicationTracker.Data;
 
@@ -12,10 +13,34 @@ public class ApplicationService(IDbContextFactory<ApplicationDbContext> factory)
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var term = search.Trim().ToLower();
-            query = query.Where(x => x.CompanyName.ToLower().Contains(term)
-                || x.PositionTitle.ToLower().Contains(term)
-                || (x.Location != null && x.Location.ToLower().Contains(term)));
+            var searchTokens = Regex
+                .Matches(
+                    search.ToLowerInvariant(),
+                    @"[\p{L}\p{N}]+")
+                .Select(match => match.Value)
+                .Where(token => token.Length > 1)
+                .Distinct()
+                .Take(25)
+                .ToList();
+
+            foreach (var searchToken in searchTokens)
+            {
+                var token = searchToken;
+
+                query = query.Where(x =>
+                    x.CompanyName.ToLower().Contains(token)
+                    || x.PositionTitle.ToLower().Contains(token)
+                    || (x.Location != null
+                        && x.Location.ToLower().Contains(token))
+                    || (x.JobDescription != null
+                        && x.JobDescription.ToLower().Contains(token))
+                    || (x.JobPostingUrl != null
+                        && x.JobPostingUrl.ToLower().Contains(token))
+                    || (x.JobBoard != null
+                        && x.JobBoard.ToLower().Contains(token))
+                    || (x.Notes != null
+                        && x.Notes.ToLower().Contains(token)));
+            }
         }
 
         if (status.HasValue)
@@ -53,6 +78,25 @@ public class ApplicationService(IDbContextFactory<ApplicationDbContext> factory)
         if (item is null) return;
         db.JobApplications.Remove(item);
         await db.SaveChangesAsync();
+    }
+
+    public async Task<bool> UpdateStatusAsync(int applicationId, ApplicationStatus status)
+    {
+        await using var db = await factory.CreateDbContextAsync();
+
+        var application = await db.JobApplications
+            .FirstOrDefaultAsync(item => item.Id == applicationId);
+
+        if (application is null)
+        {
+            return false;
+        }
+
+        application.Status = status;
+
+        await db.SaveChangesAsync();
+
+        return true;
     }
 
     public async Task<DashboardSummary> GetSummaryAsync()
