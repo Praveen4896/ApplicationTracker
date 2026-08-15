@@ -5,54 +5,132 @@
 <PageTitle>Applications | Application Tracker</PageTitle>
 
 <header class="page-header compact">
-    <div><p class="eyebrow">JOB SEARCH</p><h1>Applications</h1><p>Everything you applied for, with the exact documents you used.</p></div>
-    <a class="button primary" href="applications/new">＋ Add application</a>
+    <div>
+        <p class="eyebrow">JOB SEARCH</p>
+        <h1>Applications</h1>
+        <p>
+            Everything you applied for, with the exact documents you used.
+        </p>
+    </div>
+
+    <a class="button primary" href="applications/new">
+        ＋ Add application
+    </a>
 </header>
 
 <section class="panel">
     <div class="filters">
-        <input @bind="search" @bind:event="oninput" @bind:after="LoadAsync" placeholder="Search company, position, or location…" />
-        <select @bind="status" @bind:after="LoadAsync">
+        <input @bind="search"
+               @bind:event="oninput"
+               @bind:after="LoadAsync"
+               placeholder="Search company, position, location, job ID, or description…" />
+
+        <select @bind="status"
+                @bind:after="LoadAsync">
             <option value="">All statuses</option>
-            @foreach (var value in Enum.GetValues<ApplicationStatus>()) { <option value="@value">@value</option> }
+
+            @foreach (var value in Enum.GetValues<ApplicationStatus>())
+            {
+                <option value="@value">@value</option>
+            }
         </select>
     </div>
+
     @if (items is null)
     {
         <p>Loading…</p>
     }
     else if (items.Count == 0)
     {
-        <div class="empty"><span>▤</span><h3>No matching applications</h3><p>Add a new application or change your filters.</p></div>
+        <div class="empty">
+            <span>▤</span>
+            <h3>No matching applications</h3>
+            <p>Add a new application or change your filters.</p>
+        </div>
     }
     else
     {
-        <div class="table-wrap"><table>
-            <thead><tr><th>Company & position</th><th>Applied</th><th>Status</th><th>Resume</th><th></th></tr></thead>
-            <tbody>
-            @foreach (var item in items)
-            {
-                <tr>
-                    <td><strong>@item.CompanyName</strong><small>@item.PositionTitle @(!string.IsNullOrWhiteSpace(item.Location) ? $" · {item.Location}" : "")</small></td>
-                    <td>@item.AppliedDate.ToString("MMM d, yyyy")</td>
-                    <td><span class="status status-@item.Status.ToString().ToLower()">@item.Status</span></td>
-                    <td>@(item.ResumeFileName ?? "—")</td>
-                    <td class="actions"><a href="applications/@item.Id">View</a><a href="applications/@item.Id/edit">Edit</a></td>
-                </tr>
-            }
-            </tbody>
-        </table></div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Company &amp; position</th>
+                        <th>Applied</th>
+                        <th>Status</th>
+                        <th>Resume</th>
+                        <th></th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    @foreach (var item in items)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@item.CompanyName</strong>
+
+                                <small>
+                                    @item.PositionTitle
+                                    @(!string.IsNullOrWhiteSpace(item.Location)
+                                        ? $" · {item.Location}"
+                                        : "")
+                                </small>
+                            </td>
+
+                            <td>
+                                @item.AppliedDate.ToString("MMM d, yyyy")
+                            </td>
+
+                            <td>
+                                <span class="status status-@item.Status.ToString().ToLower()">
+                                    @item.Status
+                                </span>
+                            </td>
+
+                            <td>
+                                @(item.ResumeFileName ?? "—")
+                            </td>
+
+                            <td class="actions">
+                                <a href="applications/@item.Id">
+                                    View
+                                </a>
+
+                                <a href="applications/@item.Id/edit">
+                                    Edit
+                                </a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
     }
 </section>
 
 @code {
     private List<JobApplication>? items;
+
     private string search = string.Empty;
+
     private string status = string.Empty;
-    protected override Task OnInitializedAsync() => LoadAsync();
+
+    protected override Task OnInitializedAsync()
+    {
+        return LoadAsync();
+    }
+
     private async Task LoadAsync()
     {
-        ApplicationStatus? parsed = Enum.TryParse<ApplicationStatus>(status, out var value) ? value : null;
-        items = await Service.GetAllAsync(search, parsed);
+        ApplicationStatus? parsedStatus =
+            Enum.TryParse<ApplicationStatus>(
+                status,
+                out var selectedStatus)
+                    ? selectedStatus
+                    : null;
+
+        items = await Service.GetAllAsync(
+            search,
+            parsedStatus);
     }
 }
