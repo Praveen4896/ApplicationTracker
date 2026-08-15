@@ -1,0 +1,22 @@
+@inherits LayoutComponentBase
+
+<div class="app-shell">
+    <aside class="sidebar">
+        <a class="brand" href="/">
+            <span class="brand-mark">AT</span>
+            <span><strong>Application</strong><small>Tracker</small></span>
+        </a>
+        <nav>
+            <NavLink href="/" Match="NavLinkMatch.All"><span>⌂</span> Dashboard</NavLink>
+            <NavLink href="applications"><span>▤</span> Applications</NavLink>
+            <NavLink href="applications/new"><span>＋</span> Add Application</NavLink>
+        </nav>
+        <div class="sidebar-tip">
+            <strong>Stay organized</strong>
+            <p>Save the exact resume and job description with every application.</p>
+        </div>
+    </aside>
+    <main>
+        @Body
+    </main>
+</div>

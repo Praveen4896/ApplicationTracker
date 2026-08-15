@@ -1,0 +1,53 @@
+@page "/"
+@inject ApplicationTracker.Data.ApplicationService Service
+
+<PageTitle>Dashboard | Application Tracker</PageTitle>
+
+<header class="page-header">
+    <div><p class="eyebrow">OVERVIEW</p><h1>Your job search, organized.</h1><p>Track every application, resume, and next step in one place.</p></div>
+    <a class="button primary" href="applications/new">＋ Add application</a>
+</header>
+
+@if (summary is null)
+{
+    <p>Loading dashboard…</p>
+}
+else
+{
+    <section class="stats-grid">
+        <article class="stat-card"><span>Total applications</span><strong>@summary.Total</strong><small>All time</small></article>
+        <article class="stat-card accent"><span>Applied today</span><strong>@summary.Today</strong><small>@DateTime.Today.ToString("MMM d, yyyy")</small></article>
+        <article class="stat-card"><span>Last 7 days</span><strong>@summary.LastSevenDays</strong><small>Keep the momentum</small></article>
+        <article class="stat-card"><span>Active interviews</span><strong>@summary.ActiveInterviews</strong><small>Screening + interview</small></article>
+    </section>
+
+    <section class="content-grid">
+        <article class="panel">
+            <div class="panel-title"><div><h2>Daily activity</h2><p>Applications submitted by date</p></div></div>
+            @if (summary.DailyCounts.Count == 0)
+            {
+                <div class="empty"><span>◎</span><h3>No applications yet</h3><p>Add your first one to begin tracking your progress.</p><a class="button primary" href="applications/new">Add application</a></div>
+            }
+            else
+            {
+                <div class="activity-list">
+                    @foreach (var day in summary.DailyCounts.OrderByDescending(x => x.Date))
+                    {
+                        <div><span>@day.Date.ToString("ddd, MMM d")</span><div class="bar"><i style="width:@GetBarWidth(day.Count)%"></i></div><strong>@day.Count</strong></div>
+                    }
+                </div>
+            }
+        </article>
+        <article class="panel quick-panel">
+            <h2>Quick actions</h2>
+            <a href="applications/new"><span>＋</span><div><strong>Add an application</strong><small>Save a job, resume, and description</small></div><b>›</b></a>
+            <a href="applications"><span>⌕</span><div><strong>Find an application</strong><small>Search by company or position</small></div><b>›</b></a>
+        </article>
+    </section>
+}
+
+@code {
+    private ApplicationTracker.Data.DashboardSummary? summary;
+    protected override async Task OnInitializedAsync() => summary = await Service.GetSummaryAsync();
+    private int GetBarWidth(int count) => summary?.DailyCounts.Max(x => x.Count) is int max && max > 0 ? Math.Max(8, count * 100 / max) : 0;
+}

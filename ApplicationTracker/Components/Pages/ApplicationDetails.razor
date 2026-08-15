@@ -1,0 +1,50 @@
+@page "/applications/{Id:int}"
+@inject ApplicationTracker.Data.ApplicationService Service
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Application Details | Application Tracker</PageTitle>
+
+@if (item is null)
+{
+    <p>Loading application…</p>
+}
+else
+{
+    <header class="page-header compact detail-header">
+        <div><a class="back" href="applications">← Back to applications</a><p class="eyebrow">@item.CompanyName</p><h1>@item.PositionTitle</h1><p>@(!string.IsNullOrWhiteSpace(item.Location) ? $"{item.Location} · " : "")Applied @item.AppliedDate.ToString("MMMM d, yyyy")</p></div>
+        <div class="header-actions"><a class="button secondary" href="applications/@item.Id/edit">Edit</a>@if (!string.IsNullOrWhiteSpace(item.JobPostingUrl)) { <a class="button primary" href="@item.JobPostingUrl" target="_blank">Open job posting ↗</a> }</div>
+    </header>
+    <section class="detail-grid">
+        <div>
+            <article class="panel detail-card"><div class="panel-title"><h2>Job description</h2></div><div class="description">@(item.JobDescription ?? "No job description was saved.")</div></article>
+            <article class="panel detail-card"><h2>Notes</h2><div class="description">@(item.Notes ?? "No notes yet.")</div></article>
+        </div>
+        <aside>
+            <article class="panel detail-card facts">
+                <h2>Application details</h2>
+                <div><span>Status</span><strong class="status status-@item.Status.ToString().ToLower()">@item.Status</strong></div>
+                <div><span>Job board</span><strong>@(item.JobBoard ?? "—")</strong></div>
+                <div><span>Resume used</span><strong>@if (item.ResumeContent is { Length: > 0 }) { <a class="download-link" href="resumes/@item.Id">@item.ResumeFileName ↓</a> } else { <text>Not attached</text> }</strong></div>
+                <div><span>Recruiter</span><strong>@(item.ContactName ?? "—")</strong></div>
+                <div><span>Contact email</span><strong>@(item.ContactEmail ?? "—")</strong></div>
+                <div><span>Next step</span><strong>@(item.NextStepDate?.ToString("MMM d, yyyy h:mm tt") ?? "—")</strong></div>
+            </article>
+            <button class="delete-link" @onclick="DeleteAsync">Delete application</button>
+        </aside>
+    </section>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+    private JobApplication? item;
+    protected override async Task OnParametersSetAsync() => item = await Service.GetAsync(Id);
+    private async Task DeleteAsync()
+    {
+        if (await JS.InvokeAsync<bool>("confirm", "Delete this application permanently?"))
+        {
+            await Service.DeleteAsync(Id);
+            Navigation.NavigateTo("/applications");
+        }
+    }
+}

@@ -1,0 +1,90 @@
+@page "/applications/new"
+@page "/applications/{Id:int}/edit"
+@inject ApplicationTracker.Data.ApplicationService Service
+@inject NavigationManager Navigation
+
+<PageTitle>@(Id.HasValue ? "Edit" : "Add") Application | Application Tracker</PageTitle>
+
+<header class="page-header compact">
+    <div><a class="back" href="applications">← Back to applications</a><h1>@(Id.HasValue ? "Edit application" : "Add an application")</h1><p>Keep the posting and exact resume together so nothing gets lost.</p></div>
+</header>
+
+<EditForm Model="model" OnValidSubmit="SaveAsync" FormName="application-form">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+    <section class="form-layout">
+        <div>
+            <article class="panel form-section">
+                <h2>Job details</h2><p>Basic information about the role.</p>
+                <div class="form-grid">
+                    <label><span>Company name *</span><InputText @bind-Value="model.CompanyName" placeholder="Example: Microsoft" /><ValidationMessage For="() => model.CompanyName" /></label>
+                    <label><span>Position title *</span><InputText @bind-Value="model.PositionTitle" placeholder="Example: .NET Developer" /><ValidationMessage For="() => model.PositionTitle" /></label>
+                    <label><span>Location</span><InputText @bind-Value="model.Location" placeholder="Remote or city, state" /></label>
+                    <label><span>Job board</span><InputText @bind-Value="model.JobBoard" placeholder="Jobright, LinkedIn, company site…" /></label>
+                    <label class="full"><span>Original job-posting link</span><InputText @bind-Value="model.JobPostingUrl" placeholder="https://…" /><ValidationMessage For="() => model.JobPostingUrl" /></label>
+                    <label><span>Date applied *</span><InputDate @bind-Value="model.AppliedDate" /></label>
+                    <label><span>Current status</span><InputSelect @bind-Value="model.Status">@foreach (var value in Enum.GetValues<ApplicationStatus>()) { <option value="@value">@value</option> }</InputSelect></label>
+                </div>
+            </article>
+            <article class="panel form-section">
+                <h2>Job description</h2><p>Paste the full description; it remains available even if the posting disappears.</p>
+                <label><InputTextArea @bind-Value="model.JobDescription" rows="12" placeholder="Paste the complete job description here…" /></label>
+            </article>
+            <article class="panel form-section">
+                <h2>Follow-up details</h2><p>Add recruiter information and your next step when available.</p>
+                <div class="form-grid">
+                    <label><span>Contact name</span><InputText @bind-Value="model.ContactName" /></label>
+                    <label><span>Contact email</span><InputText @bind-Value="model.ContactEmail" /><ValidationMessage For="() => model.ContactEmail" /></label>
+                    <label><span>Next step date and time</span><InputDate @bind-Value="model.NextStepDate" Type="InputDateType.DateTimeLocal" /></label>
+                    <label class="full"><span>Notes</span><InputTextArea @bind-Value="model.Notes" rows="5" placeholder="Screening notes, interview rounds, salary range…" /></label>
+                </div>
+            </article>
+        </div>
+        <aside>
+            <article class="panel form-section sticky">
+                <h2>Resume used</h2><p>Attach the exact version submitted for this job.</p>
+                <label class="upload-box">
+                    <InputFile OnChange="UploadResumeAsync" accept=".pdf,.doc,.docx" />
+                    <span>⇧</span><strong>@(model.ResumeFileName ?? "Choose resume")</strong><small>PDF, DOC, or DOCX · max 10 MB</small>
+                </label>
+                @if (!string.IsNullOrWhiteSpace(uploadError)) { <p class="error">@uploadError</p> }
+            </article>
+            <div class="save-actions"><button class="button primary" type="submit" disabled="@saving">@(saving ? "Saving…" : "Save application")</button><a class="button secondary" href="applications">Cancel</a></div>
+        </aside>
+    </section>
+</EditForm>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private JobApplication model = new();
+    private bool saving;
+    private string? uploadError;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Id.HasValue) model = await Service.GetAsync(Id.Value) ?? new JobApplication();
+    }
+
+    private async Task UploadResumeAsync(InputFileChangeEventArgs e)
+    {
+        uploadError = null;
+        try
+        {
+            var file = e.File;
+            await using var stream = file.OpenReadStream(10 * 1024 * 1024);
+            using var memory = new MemoryStream();
+            await stream.CopyToAsync(memory);
+            model.ResumeContent = memory.ToArray();
+            model.ResumeFileName = file.Name;
+            model.ResumeContentType = file.ContentType;
+        }
+        catch (Exception) { uploadError = "The file could not be uploaded. Please choose a file under 10 MB."; }
+    }
+
+    private async Task SaveAsync()
+    {
+        saving = true;
+        await Service.SaveAsync(model);
+        Navigation.NavigateTo($"/applications/{model.Id}");
+    }
+}
