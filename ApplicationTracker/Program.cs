@@ -22,10 +22,12 @@ builder.Services.AddHttpClient<JobImportService>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<JobSearchEngine>();
+
 builder.Services.AddHttpClient<JobDiscoveryService>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(30);
-
     client.DefaultRequestHeaders.UserAgent.ParseAdd(
         "ApplicationTracker/1.0");
 });
@@ -53,16 +55,12 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler(
         "/Error",
         createScopeForErrors: true);
-
     app.UseHsts();
 }
 
 app.UseHttpsRedirection();
-
 app.UseCors("ChromeExtension");
-
 app.UseStaticFiles();
-
 app.UseAntiforgery();
 
 app.MapRazorComponents<App>()
@@ -74,14 +72,11 @@ app.MapGet(
         int id,
         IDbContextFactory<ApplicationDbContext> factory) =>
     {
-        await using var db =
-            await factory.CreateDbContextAsync();
+        await using var db = await factory.CreateDbContextAsync();
 
-        var application =
-            await db.JobApplications
-                .AsNoTracking()
-                .FirstOrDefaultAsync(item =>
-                    item.Id == id);
+        var application = await db.JobApplications
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id);
 
         if (application?.ResumeContent is not { Length: > 0 })
         {
@@ -90,17 +85,13 @@ app.MapGet(
 
         return Results.File(
             application.ResumeContent,
-            application.ResumeContentType
-                ?? "application/octet-stream",
-            application.ResumeFileName
-                ?? "resume");
+            application.ResumeContentType ?? "application/octet-stream",
+            application.ResumeFileName ?? "resume");
     });
 
 app.MapPost(
         "/api/job-captures",
-        (
-            JobCaptureRequest request,
-            JobCaptureStore store) =>
+        (JobCaptureRequest request, JobCaptureStore store) =>
         {
             if (string.IsNullOrWhiteSpace(request.Url)
                 || string.IsNullOrWhiteSpace(request.RenderedText))
@@ -110,24 +101,16 @@ app.MapPost(
             }
 
             var token = store.Add(request);
-
-            return Results.Ok(new
-            {
-                token
-            });
+            return Results.Ok(new { token });
         })
     .RequireCors("ChromeExtension");
 
 using (var scope = app.Services.CreateScope())
 {
-    var factory =
-        scope.ServiceProvider
-            .GetRequiredService<
-                IDbContextFactory<ApplicationDbContext>>();
+    var factory = scope.ServiceProvider
+        .GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
 
-    await using var db =
-        await factory.CreateDbContextAsync();
-
+    await using var db = await factory.CreateDbContextAsync();
     await db.Database.EnsureCreatedAsync();
 }
 

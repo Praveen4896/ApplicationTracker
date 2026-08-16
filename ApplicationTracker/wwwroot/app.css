@@ -1011,17 +1011,121 @@ label > span {
     margin-bottom: 22px;
 }
 
-.discovery-search-grid {
+.discovery-primary-search {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 0.45fr) auto;
     align-items: end;
     gap: 16px;
 }
 
-    .discovery-search-grid .button {
+    .discovery-primary-search .button {
         min-height: 43px;
         white-space: nowrap;
     }
+
+.discovery-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
+    align-items: end;
+    gap: 14px;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid #edf0f5;
+}
+
+.discovery-us-filter {
+    display: flex;
+    min-height: 43px;
+    align-items: center;
+    gap: 9px;
+    padding: 0 4px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+    .discovery-us-filter input {
+        width: 17px;
+        height: 17px;
+        margin: 0;
+    }
+
+    .discovery-us-filter span {
+        margin: 0;
+    }
+
+.discovery-skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 18px 0 0;
+    padding: 16px 0 0;
+    border: 0;
+    border-top: 1px solid #edf0f5;
+}
+
+    .discovery-skills legend {
+        width: 100%;
+        margin-bottom: 10px;
+        padding: 0;
+        color: #3e4a60;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+.skill-filter {
+    position: relative;
+    display: inline-flex;
+    cursor: pointer;
+}
+
+    .skill-filter input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+    }
+
+    .skill-filter span {
+        margin: 0;
+        padding: 7px 11px;
+        border: 1px solid #d8deea;
+        border-radius: 20px;
+        background: #ffffff;
+        color: #536078;
+        font-size: 12px;
+        transition: 0.15s ease;
+    }
+
+    .skill-filter:hover span {
+        border-color: #9db6ea;
+        background: #f5f8ff;
+    }
+
+    .skill-filter.selected span {
+        border-color: #3978f6;
+        background: #e7efff;
+        color: #245bc8;
+    }
+
+    .skill-filter input:focus-visible + span {
+        outline: 2px solid #3978f6;
+        outline-offset: 2px;
+    }
+
+.discovery-filter-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 14px;
+}
+
+.discovery-clear-button {
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    color: #2867e8;
+    font: 600 13px 'DM Sans', sans-serif;
+    cursor: pointer;
+}
 
 .discovery-results {
     display: grid;
@@ -1030,10 +1134,15 @@ label > span {
 
 .discovery-results-header {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: space-between;
     gap: 20px;
 }
+
+    .discovery-results-header > div {
+        display: grid;
+        gap: 4px;
+    }
 
     .discovery-results-header h2 {
         margin: 0;
@@ -1115,16 +1224,47 @@ label > span {
     border-left: 4px solid #e3a52b;
 }
 
+    .discovery-warning summary {
+        color: #7a5810;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
     .discovery-warning p {
-        margin-top: 7px;
+        margin-top: 9px;
     }
 
 .discovery-message {
     margin-bottom: 20px;
 }
 
+.discovery-loading {
+    min-height: 240px;
+}
+
+.discovery-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 12px 0 2px;
+}
+
+    .discovery-pagination span {
+        color: #65718a;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+@media (max-width: 1150px) {
+    .discovery-filter-grid {
+        grid-template-columns: repeat(2, minmax(170px, 1fr));
+    }
+}
+
 @media (max-width: 900px) {
-    .discovery-search-grid {
+    .discovery-primary-search,
+    .discovery-filter-grid {
         grid-template-columns: 1fr;
     }
 
@@ -1135,6 +1275,11 @@ label > span {
     .discovered-job-actions {
         grid-template-columns: 1fr 1fr;
     }
+
+    .discovery-results-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
 }
 
 @media (max-width: 600px) {
@@ -1144,5 +1289,9 @@ label > span {
 
     .discovered-job-actions {
         grid-template-columns: 1fr;
+    }
+
+    .discovery-pagination {
+        flex-wrap: wrap;
     }
 }

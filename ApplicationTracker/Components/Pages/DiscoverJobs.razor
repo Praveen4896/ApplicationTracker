@@ -1,8 +1,8 @@
 ﻿@page "/discover"
-@inject ApplicationTracker.Services.JobDiscoveryService DiscoveryService
-@inject ApplicationTracker.Services.JobCaptureStore CaptureStore
-@inject NavigationManager Navigation
 @using ApplicationTracker.Services
+@inject JobDiscoveryService DiscoveryService
+@inject JobCaptureStore CaptureStore
+@inject NavigationManager Navigation
 
 <PageTitle>Discover Jobs | Application Tracker</PageTitle>
 
@@ -10,31 +10,101 @@
     <div>
         <p class="eyebrow">JOB DISCOVERY</p>
         <h1>Discover jobs</h1>
-        <p>
-            Search direct employer and ATS job postings.
-        </p>
+        <p>Search verified, direct employer and public ATS job postings.</p>
     </div>
 </header>
 
 <section class="panel discovery-search-panel">
-    <div class="discovery-search-grid">
+    <div class="discovery-primary-search">
         <label>
             <span>Job title, skill, or company</span>
             <InputText @bind-Value="keyword"
-                       placeholder=".NET, software engineer, data scientist…" />
+                       @onkeydown="HandleSearchKeyDown"
+                       placeholder=".NET developer, software engineer, data scientist…" />
         </label>
 
         <label>
             <span>Location</span>
             <InputText @bind-Value="location"
+                       @onkeydown="HandleSearchKeyDown"
                        placeholder="Remote, Texas, New York…" />
         </label>
 
         <button type="button"
                 class="button primary"
                 disabled="@loading"
-                @onclick="SearchAsync">
+                @onclick="NewSearchAsync">
             @(loading ? "Searching…" : "Search jobs")
+        </button>
+    </div>
+
+    <div class="discovery-filter-grid">
+        <label>
+            <span>Date posted</span>
+            <select @bind="postedWithinValue">
+                <option value="">Any time</option>
+                <option value="1">Last 24 hours</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+            </select>
+        </label>
+
+        <label>
+            <span>Employment type</span>
+            <select @bind="employmentType">
+                <option value="">All types</option>
+                <option value="Full time">Full time</option>
+                <option value="Part time">Part time</option>
+                <option value="Contract">Contract</option>
+                <option value="Internship">Internship</option>
+            </select>
+        </label>
+
+        <label>
+            <span>Work model</span>
+            <select @bind="workplaceType">
+                <option value="">All work models</option>
+                <option value="Remote">Remote</option>
+                <option value="Hybrid">Hybrid</option>
+                <option value="On-site">On-site</option>
+            </select>
+        </label>
+
+        <label>
+            <span>Sort by</span>
+            <select @bind="sortOrder">
+                <option value="newest">Newest first</option>
+                <option value="company">Company</option>
+                <option value="title">Job title</option>
+            </select>
+        </label>
+
+        <label class="discovery-us-filter">
+            <input type="checkbox" @bind="unitedStatesOnly" />
+            <span>United States only</span>
+        </label>
+    </div>
+
+    <fieldset class="discovery-skills">
+        <legend>Skills — select one or more</legend>
+
+        @foreach (var skill in availableSkills)
+        {
+            <label class="skill-filter @(selectedSkills.Contains(skill) ? "selected" : string.Empty)">
+                <input type="checkbox"
+                       checked="@selectedSkills.Contains(skill)"
+                       @onchange="eventArgs => ToggleSkill(skill, eventArgs.Value)" />
+                <span>@skill</span>
+            </label>
+        }
+    </fieldset>
+
+    <div class="discovery-filter-actions">
+        <button type="button"
+                class="discovery-clear-button"
+                disabled="@loading"
+                @onclick="ClearFiltersAsync">
+            Clear all filters
         </button>
     </div>
 </section>
@@ -48,21 +118,24 @@
 
 @if (warnings.Count > 0)
 {
-    <section class="panel discovery-warning">
-        <strong>Some sources could not be loaded:</strong>
+    <details class="panel discovery-warning">
+        <summary>
+            @warnings.Count source(s) could not be loaded. Other sources are still shown.
+        </summary>
 
         @foreach (var warning in warnings)
         {
             <p>@warning</p>
         }
-    </section>
+    </details>
 }
 
 @if (loading)
 {
-    <section class="panel empty">
-        <h3>Searching job sources…</h3>
-        <p>Please wait while current postings are loaded.</p>
+    <section class="panel empty discovery-loading">
+        <span>⌕</span>
+        <h3>Searching verified job sources…</h3>
+        <p>This can take a few seconds because several employer boards are being checked.</p>
     </section>
 }
 else if (searchPerformed && jobs.Count == 0)
@@ -71,7 +144,7 @@ else if (searchPerformed && jobs.Count == 0)
         <span>⌕</span>
         <h3>No matching jobs found</h3>
         <p>
-            Try a different keyword or location.
+            Try a broader keyword, remove a skill, or change the date and location filters.
         </p>
     </section>
 }
@@ -79,11 +152,15 @@ else if (jobs.Count > 0)
 {
     <section class="discovery-results">
         <div class="discovery-results-header">
-            <h2>@jobs.Count job(s) found</h2>
+            <div>
+                <h2>@totalCount matching job(s)</h2>
+                <span>
+                    Showing @FirstResultNumber–@LastResultNumber from
+                    @successfulSourceCount of @sourceCount verified sources
+                </span>
+            </div>
 
-            <span>
-                Direct ATS and employer postings
-            </span>
+            <span>@allJobsLoaded active postings checked</span>
         </div>
 
         @foreach (var job in jobs)
@@ -93,22 +170,22 @@ else if (jobs.Count > 0)
                     <div class="discovered-job-heading">
                         <div>
                             <span class="verified-source">
-                                @(job.IsVerifiedSource
-                                    ? "✓ Official ATS"
-                                    : job.Source)
+                                @(job.IsVerifiedSource ? "✓ Official ATS" : job.Source)
                             </span>
 
                             <h2>@job.PositionTitle</h2>
-
                             <strong>@job.CompanyName</strong>
                         </div>
 
                         @if (job.PostedDate.HasValue)
                         {
-                            <time>
-                                Posted
-                                @job.PostedDate.Value.ToString("MMM d, yyyy")
+                            <time title="The date is supplied by the employer's ATS.">
+                                Posted @job.PostedDate.Value.ToString("MMM d, yyyy")
                             </time>
+                        }
+                        else
+                        {
+                            <time>Date unavailable</time>
                         }
                     </div>
 
@@ -126,6 +203,11 @@ else if (jobs.Count > 0)
                         @if (!string.IsNullOrWhiteSpace(job.EmploymentType))
                         {
                             <span>@job.EmploymentType</span>
+                        }
+
+                        @if (!string.IsNullOrWhiteSpace(job.Department))
+                        {
+                            <span>@job.Department</span>
                         }
 
                         <span>@job.Source</span>
@@ -155,20 +237,89 @@ else if (jobs.Count > 0)
                 </div>
             </article>
         }
+
+        @if (totalPages > 1)
+        {
+            <nav class="discovery-pagination" aria-label="Job search result pages">
+                <button type="button"
+                        class="button secondary"
+                        disabled="@(loading || currentPage <= 1)"
+                        @onclick="PreviousPageAsync">
+                    ← Previous
+                </button>
+
+                <span>Page @currentPage of @totalPages</span>
+
+                <button type="button"
+                        class="button secondary"
+                        disabled="@(loading || currentPage >= totalPages)"
+                        @onclick="NextPageAsync">
+                    Next →
+                </button>
+            </nav>
+        }
     </section>
 }
 
 @code {
+    private readonly string[] availableSkills =
+    {
+        ".NET",
+        "C#",
+        "Java",
+        "Python",
+        "JavaScript",
+        "TypeScript",
+        "React",
+        "Angular",
+        "SQL",
+        "Azure",
+        "AWS",
+        "Docker",
+        "Kubernetes"
+    };
+
+    private readonly HashSet<string> selectedSkills =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private string keyword = string.Empty;
     private string location = string.Empty;
+    private string postedWithinValue = string.Empty;
+    private string employmentType = string.Empty;
+    private string workplaceType = string.Empty;
+    private string sortOrder = "newest";
+    private bool unitedStatesOnly = true;
 
     private bool loading;
     private bool searchPerformed;
-
     private string? errorMessage;
-
     private List<DiscoveredJobResult> jobs = new();
     private List<string> warnings = new();
+
+    private int currentPage = 1;
+    private int pageSize = 20;
+    private int totalCount;
+    private int totalPages = 1;
+    private int sourceCount;
+    private int successfulSourceCount;
+    private int allJobsLoaded;
+
+    private int FirstResultNumber =>
+        totalCount == 0 ? 0 : ((currentPage - 1) * pageSize) + 1;
+
+    private int LastResultNumber =>
+        Math.Min(currentPage * pageSize, totalCount);
+
+    protected override Task OnInitializedAsync()
+    {
+        return SearchAsync();
+    }
+
+    private async Task NewSearchAsync()
+    {
+        currentPage = 1;
+        await SearchAsync();
+    }
 
     private async Task SearchAsync()
     {
@@ -180,13 +331,36 @@ else if (jobs.Count > 0)
 
         try
         {
-            var response =
-                await DiscoveryService.SearchAsync(
-                    keyword,
-                    location);
+            int? postedWithinDays = int.TryParse(
+                postedWithinValue,
+                out var parsedDays)
+                    ? parsedDays
+                    : null;
+
+            var response = await DiscoveryService.SearchAsync(
+                new JobDiscoverySearchRequest
+                {
+                    Keyword = keyword,
+                    Location = location,
+                    PostedWithinDays = postedWithinDays,
+                    EmploymentType = employmentType,
+                    WorkplaceType = workplaceType,
+                    Skills = selectedSkills.ToList(),
+                    UnitedStatesOnly = unitedStatesOnly,
+                    SortOrder = sortOrder,
+                    Page = currentPage,
+                    PageSize = pageSize
+                });
 
             jobs = response.Jobs;
             warnings = response.Warnings;
+            totalCount = response.TotalCount;
+            currentPage = response.Page;
+            pageSize = response.PageSize;
+            totalPages = response.TotalPages;
+            sourceCount = response.SourceCount;
+            successfulSourceCount = response.SuccessfulSourceCount;
+            allJobsLoaded = response.AllJobsLoaded;
         }
         catch (Exception)
         {
@@ -199,54 +373,89 @@ else if (jobs.Count > 0)
         }
     }
 
-    private void TrackJob(
-        DiscoveredJobResult job)
+    private async Task PreviousPageAsync()
     {
-        var token =
-            CaptureStore.Add(
-                new JobCaptureRequest
-                {
-                    Url =
-                        job.JobPostingUrl,
+        if (currentPage <= 1)
+        {
+            return;
+        }
 
-                    PageTitle =
-                        job.PositionTitle,
+        currentPage--;
+        await SearchAsync();
+    }
 
-                    PositionTitle =
-                        job.PositionTitle,
+    private async Task NextPageAsync()
+    {
+        if (currentPage >= totalPages)
+        {
+            return;
+        }
 
-                    CompanyName =
-                        job.CompanyName,
+        currentPage++;
+        await SearchAsync();
+    }
 
-                    Location =
-                        job.Location,
+    private void ToggleSkill(string skill, object? value)
+    {
+        if (value is bool isChecked && isChecked)
+        {
+            selectedSkills.Add(skill);
+        }
+        else
+        {
+            selectedSkills.Remove(skill);
+        }
+    }
 
-                    JobId =
-                        job.ExternalJobId,
+    private async Task ClearFiltersAsync()
+    {
+        keyword = string.Empty;
+        location = string.Empty;
+        postedWithinValue = string.Empty;
+        employmentType = string.Empty;
+        workplaceType = string.Empty;
+        sortOrder = "newest";
+        unitedStatesOnly = true;
+        selectedSkills.Clear();
+        currentPage = 1;
 
-                    Source =
-                        job.Source,
+        await SearchAsync();
+    }
 
-                    RenderedText =
-                        job.JobDescription,
+    private async Task HandleSearchKeyDown(KeyboardEventArgs eventArgs)
+    {
+        if (eventArgs.Key == "Enter")
+        {
+            await NewSearchAsync();
+        }
+    }
 
-                    CapturedAtUtc =
-                        DateTime.UtcNow
-                });
+    private void TrackJob(DiscoveredJobResult job)
+    {
+        var token = CaptureStore.Add(new JobCaptureRequest
+        {
+            Url = job.JobPostingUrl,
+            PageTitle = job.PositionTitle,
+            PositionTitle = job.PositionTitle,
+            CompanyName = job.CompanyName,
+            Location = job.Location,
+            JobId = job.ExternalJobId,
+            Source = $"{job.Source} - {job.CompanyName}",
+            RenderedText = job.JobDescription,
+            CapturedAtUtc = DateTime.UtcNow
+        });
 
         Navigation.NavigateTo(
             "/applications/new"
             + $"?captureToken={Uri.EscapeDataString(token)}");
     }
 
-    private static string ShortDescription(
-        string description)
+    private static string ShortDescription(string description)
     {
         const int maximumLength = 420;
 
         return description.Length <= maximumLength
             ? description
-            : description[..maximumLength].Trim()
-              + "…";
+            : description[..maximumLength].Trim() + "…";
     }
 }
