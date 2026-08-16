@@ -22,6 +22,14 @@ builder.Services.AddHttpClient<JobImportService>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 
+builder.Services.AddHttpClient<JobDiscoveryService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+
+    client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "ApplicationTracker/1.0");
+});
+
 builder.Services.AddSingleton<JobCaptureStore>();
 
 builder.Services.AddCors(options =>

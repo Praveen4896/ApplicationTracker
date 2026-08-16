@@ -1005,3 +1005,144 @@ label > span {
         text-overflow: ellipsis;
         white-space: nowrap;
     }
+/* Job discovery */
+
+.discovery-search-panel {
+    margin-bottom: 22px;
+}
+
+.discovery-search-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr) auto;
+    align-items: end;
+    gap: 16px;
+}
+
+    .discovery-search-grid .button {
+        min-height: 43px;
+        white-space: nowrap;
+    }
+
+.discovery-results {
+    display: grid;
+    gap: 16px;
+}
+
+.discovery-results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+    .discovery-results-header h2 {
+        margin: 0;
+        font: 700 18px 'Manrope', sans-serif;
+    }
+
+    .discovery-results-header span {
+        color: #7a8497;
+        font-size: 13px;
+    }
+
+.discovered-job-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 180px;
+    align-items: start;
+    gap: 24px;
+}
+
+.discovered-job-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+    .discovered-job-heading h2 {
+        margin: 6px 0;
+        color: #172033;
+    }
+
+    .discovered-job-heading strong {
+        color: #4d5a71;
+    }
+
+    .discovered-job-heading time {
+        color: #7d879a;
+        white-space: nowrap;
+        font-size: 12px;
+    }
+
+.verified-source {
+    display: inline-flex;
+    width: max-content;
+    padding: 4px 8px;
+    border-radius: 20px;
+    background: #dcf7e8;
+    color: #18764a;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.discovered-job-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 15px 0;
+}
+
+    .discovered-job-facts span {
+        padding: 5px 9px;
+        border-radius: 20px;
+        background: #edf3ff;
+        color: #3c5f9e;
+        font-size: 12px;
+    }
+
+.discovered-job-description {
+    color: #647087 !important;
+    line-height: 1.6;
+}
+
+.discovered-job-actions {
+    display: grid;
+    gap: 10px;
+}
+
+.discovery-warning {
+    margin-bottom: 20px;
+    border-left: 4px solid #e3a52b;
+}
+
+    .discovery-warning p {
+        margin-top: 7px;
+    }
+
+.discovery-message {
+    margin-bottom: 20px;
+}
+
+@media (max-width: 900px) {
+    .discovery-search-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .discovered-job-card {
+        grid-template-columns: 1fr;
+    }
+
+    .discovered-job-actions {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+@media (max-width: 600px) {
+    .discovered-job-heading {
+        flex-direction: column;
+    }
+
+    .discovered-job-actions {
+        grid-template-columns: 1fr;
+    }
+}

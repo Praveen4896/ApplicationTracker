@@ -1,0 +1,252 @@
+﻿@page "/discover"
+@inject ApplicationTracker.Services.JobDiscoveryService DiscoveryService
+@inject ApplicationTracker.Services.JobCaptureStore CaptureStore
+@inject NavigationManager Navigation
+@using ApplicationTracker.Services
+
+<PageTitle>Discover Jobs | Application Tracker</PageTitle>
+
+<header class="page-header compact">
+    <div>
+        <p class="eyebrow">JOB DISCOVERY</p>
+        <h1>Discover jobs</h1>
+        <p>
+            Search direct employer and ATS job postings.
+        </p>
+    </div>
+</header>
+
+<section class="panel discovery-search-panel">
+    <div class="discovery-search-grid">
+        <label>
+            <span>Job title, skill, or company</span>
+            <InputText @bind-Value="keyword"
+                       placeholder=".NET, software engineer, data scientist…" />
+        </label>
+
+        <label>
+            <span>Location</span>
+            <InputText @bind-Value="location"
+                       placeholder="Remote, Texas, New York…" />
+        </label>
+
+        <button type="button"
+                class="button primary"
+                disabled="@loading"
+                @onclick="SearchAsync">
+            @(loading ? "Searching…" : "Search jobs")
+        </button>
+    </div>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <section class="panel discovery-message error">
+        @errorMessage
+    </section>
+}
+
+@if (warnings.Count > 0)
+{
+    <section class="panel discovery-warning">
+        <strong>Some sources could not be loaded:</strong>
+
+        @foreach (var warning in warnings)
+        {
+            <p>@warning</p>
+        }
+    </section>
+}
+
+@if (loading)
+{
+    <section class="panel empty">
+        <h3>Searching job sources…</h3>
+        <p>Please wait while current postings are loaded.</p>
+    </section>
+}
+else if (searchPerformed && jobs.Count == 0)
+{
+    <section class="panel empty">
+        <span>⌕</span>
+        <h3>No matching jobs found</h3>
+        <p>
+            Try a different keyword or location.
+        </p>
+    </section>
+}
+else if (jobs.Count > 0)
+{
+    <section class="discovery-results">
+        <div class="discovery-results-header">
+            <h2>@jobs.Count job(s) found</h2>
+
+            <span>
+                Direct ATS and employer postings
+            </span>
+        </div>
+
+        @foreach (var job in jobs)
+        {
+            <article class="panel discovered-job-card">
+                <div class="discovered-job-main">
+                    <div class="discovered-job-heading">
+                        <div>
+                            <span class="verified-source">
+                                @(job.IsVerifiedSource
+                                    ? "✓ Official ATS"
+                                    : job.Source)
+                            </span>
+
+                            <h2>@job.PositionTitle</h2>
+
+                            <strong>@job.CompanyName</strong>
+                        </div>
+
+                        @if (job.PostedDate.HasValue)
+                        {
+                            <time>
+                                Posted
+                                @job.PostedDate.Value.ToString("MMM d, yyyy")
+                            </time>
+                        }
+                    </div>
+
+                    <div class="discovered-job-facts">
+                        @if (!string.IsNullOrWhiteSpace(job.Location))
+                        {
+                            <span>⌖ @job.Location</span>
+                        }
+
+                        @if (!string.IsNullOrWhiteSpace(job.WorkplaceType))
+                        {
+                            <span>@job.WorkplaceType</span>
+                        }
+
+                        @if (!string.IsNullOrWhiteSpace(job.EmploymentType))
+                        {
+                            <span>@job.EmploymentType</span>
+                        }
+
+                        <span>@job.Source</span>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(job.JobDescription))
+                    {
+                        <p class="discovered-job-description">
+                            @ShortDescription(job.JobDescription)
+                        </p>
+                    }
+                </div>
+
+                <div class="discovered-job-actions">
+                    <button type="button"
+                            class="button primary"
+                            @onclick="() => TrackJob(job)">
+                        Track application
+                    </button>
+
+                    <a class="button secondary"
+                       href="@job.ApplyUrl"
+                       target="_blank"
+                       rel="noopener noreferrer">
+                        Open job ↗
+                    </a>
+                </div>
+            </article>
+        }
+    </section>
+}
+
+@code {
+    private string keyword = string.Empty;
+    private string location = string.Empty;
+
+    private bool loading;
+    private bool searchPerformed;
+
+    private string? errorMessage;
+
+    private List<DiscoveredJobResult> jobs = new();
+    private List<string> warnings = new();
+
+    private async Task SearchAsync()
+    {
+        loading = true;
+        searchPerformed = true;
+        errorMessage = null;
+        jobs.Clear();
+        warnings.Clear();
+
+        try
+        {
+            var response =
+                await DiscoveryService.SearchAsync(
+                    keyword,
+                    location);
+
+            jobs = response.Jobs;
+            warnings = response.Warnings;
+        }
+        catch (Exception)
+        {
+            errorMessage =
+                "The job search could not be completed. Please try again.";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void TrackJob(
+        DiscoveredJobResult job)
+    {
+        var token =
+            CaptureStore.Add(
+                new JobCaptureRequest
+                {
+                    Url =
+                        job.JobPostingUrl,
+
+                    PageTitle =
+                        job.PositionTitle,
+
+                    PositionTitle =
+                        job.PositionTitle,
+
+                    CompanyName =
+                        job.CompanyName,
+
+                    Location =
+                        job.Location,
+
+                    JobId =
+                        job.ExternalJobId,
+
+                    Source =
+                        job.Source,
+
+                    RenderedText =
+                        job.JobDescription,
+
+                    CapturedAtUtc =
+                        DateTime.UtcNow
+                });
+
+        Navigation.NavigateTo(
+            "/applications/new"
+            + $"?captureToken={Uri.EscapeDataString(token)}");
+    }
+
+    private static string ShortDescription(
+        string description)
+    {
+        const int maximumLength = 420;
+
+        return description.Length <= maximumLength
+            ? description
+            : description[..maximumLength].Trim()
+              + "…";
+    }
+}
