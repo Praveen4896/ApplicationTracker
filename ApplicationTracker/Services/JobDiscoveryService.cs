@@ -1,18 +1,30 @@
 ﻿using System.Net;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace ApplicationTracker.Services;
 
 public sealed class JobDiscoveryService
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim>
+        SourceLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient httpClient;
     private readonly IConfiguration configuration;
+    private readonly IMemoryCache memoryCache;
+    private readonly JobSearchEngine searchEngine;
 
-    public JobDiscoveryService(HttpClient httpClient, IConfiguration configuration)
+    public JobDiscoveryService(
+        HttpClient httpClient,
+        IConfiguration configuration,
+        IMemoryCache memoryCache,
+        JobSearchEngine searchEngine)
     {
         this.httpClient = httpClient;
         this.configuration = configuration;
+        this.memoryCache = memoryCache;
+        this.searchEngine = searchEngine;
     }
 
     public Task<JobDiscoveryResponse> SearchAsync(
@@ -71,17 +83,47 @@ public sealed class JobDiscoveryService
 
             response.SuccessfulSourceCount++;
             response.AllJobsLoaded += sourceResult.Jobs.Count;
-            response.Jobs.AddRange(sourceResult.Jobs);
+            response.Jobs.AddRange(sourceResult.Jobs.Select(CloneJob));
         }
 
-        var filteredJobs = response.Jobs
-            .Where(job => MatchesSearch(job, request))
+        return FilterCatalog(response.Jobs, request, response);
+    }
+
+    public JobDiscoveryResponse FilterCatalog(
+        IEnumerable<DiscoveredJobResult> catalog,
+        JobDiscoverySearchRequest request,
+        JobDiscoveryResponse? sourceInformation = null)
+    {
+        var response = new JobDiscoveryResponse
+        {
+            SourceCount = sourceInformation?.SourceCount ?? 0,
+            SuccessfulSourceCount = sourceInformation?.SuccessfulSourceCount ?? 0,
+            AllJobsLoaded = sourceInformation?.AllJobsLoaded ?? 0
+        };
+
+        if (sourceInformation is not null)
+        {
+            response.Warnings.AddRange(sourceInformation.Warnings);
+        }
+
+        var filterContext = BuildFilterContext(request);
+
+        var filteredJobs = catalog
+            .Select(CloneJob)
+            .Where(job => MatchesSearch(job, request, filterContext))
             .GroupBy(GetDeduplicationKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToList();
 
         filteredJobs = request.SortOrder.ToLowerInvariant() switch
         {
+            "relevance" => filteredJobs
+                .OrderByDescending(job => job.RelevanceScore)
+                .ThenByDescending(job => job.PostedDate.HasValue)
+                .ThenByDescending(job => job.PostedDate)
+                .ThenBy(job => job.CompanyName)
+                .ToList(),
+
             "company" => filteredJobs
                 .OrderBy(job => job.CompanyName)
                 .ThenBy(job => job.PositionTitle)
@@ -100,7 +142,7 @@ public sealed class JobDiscoveryService
         };
 
         response.TotalCount = filteredJobs.Count;
-        response.PageSize = Math.Clamp(request.PageSize, 5, 50);
+        response.PageSize = Math.Clamp(request.PageSize, 5, 5000);
         response.TotalPages = Math.Max(
             1,
             (int)Math.Ceiling(
@@ -124,25 +166,80 @@ public sealed class JobDiscoveryService
     {
         try
         {
-            var jobs = source.Provider.Trim().ToLowerInvariant() switch
-            {
-                "ashby" => await GetAshbyJobsAsync(source, cancellationToken),
-                "greenhouse" => await GetGreenhouseJobsAsync(source, cancellationToken),
-                "lever" => await GetLeverJobsAsync(source, cancellationToken),
-                _ => throw new InvalidOperationException(
-                    $"Unsupported provider '{source.Provider}'.")
-            };
+            using var sourceTimeout =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            sourceTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+            var sourceToken = sourceTimeout.Token;
 
-            foreach (var job in jobs)
+            var cacheKey =
+                $"job-discovery:{source.Provider.Trim().ToLowerInvariant()}:{source.BoardIdentifier.Trim().ToLowerInvariant()}";
+
+            if (memoryCache.TryGetValue(
+                    cacheKey,
+                    out List<DiscoveredJobResult>? cachedJobs)
+                && cachedJobs is not null)
             {
-                NormalizeJob(job);
+                return new SourceLoadResult(cachedJobs, null);
             }
 
-            return new SourceLoadResult(jobs, null);
+            var sourceLock = SourceLocks.GetOrAdd(
+                cacheKey,
+                _ => new SemaphoreSlim(1, 1));
+            await sourceLock.WaitAsync(sourceToken);
+
+            try
+            {
+                // A background warm-up or another browser request may have
+                // populated the cache while this request waited for the lock.
+                if (memoryCache.TryGetValue(
+                        cacheKey,
+                        out cachedJobs)
+                    && cachedJobs is not null)
+                {
+                    return new SourceLoadResult(cachedJobs, null);
+                }
+
+                var jobs = source.Provider.Trim().ToLowerInvariant() switch
+                {
+                    "ashby" => await GetAshbyJobsAsync(source, sourceToken),
+                    "greenhouse" => await GetGreenhouseJobsAsync(source, sourceToken),
+                    "lever" => await GetLeverJobsAsync(source, sourceToken),
+                    "remotive" => await GetRemotiveJobsAsync(source, sourceToken),
+                    "jobicy" => await GetJobicyJobsAsync(source, sourceToken),
+                    _ => throw new InvalidOperationException(
+                        $"Unsupported provider '{source.Provider}'.")
+                };
+
+                foreach (var job in jobs)
+                {
+                    NormalizeJob(job);
+                }
+
+                memoryCache.Set(
+                    cacheKey,
+                    jobs,
+                    new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow =
+                            GetSourceCacheDuration(source.Provider)
+                    });
+
+                return new SourceLoadResult(jobs, null);
+            }
+            finally
+            {
+                sourceLock.Release();
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return new SourceLoadResult(
+                new List<DiscoveredJobResult>(),
+                $"{source.CompanyName} ({source.Provider}): source timed out.");
         }
         catch (Exception exception)
         {
@@ -150,6 +247,105 @@ public sealed class JobDiscoveryService
                 new List<DiscoveredJobResult>(),
                 $"{source.CompanyName} ({source.Provider}): {FriendlyError(exception)}");
         }
+    }
+
+    private async Task<List<DiscoveredJobResult>> GetRemotiveJobsAsync(
+        JobDiscoverySourceOptions source,
+        CancellationToken cancellationToken)
+    {
+        const string url = "https://remotive.com/api/remote-jobs";
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(
+            cancellationToken);
+        using var document = await JsonDocument.ParseAsync(
+            stream,
+            cancellationToken: cancellationToken);
+
+        var jobs = new List<DiscoveredJobResult>();
+        if (!document.RootElement.TryGetProperty("jobs", out var jobElements)
+            || jobElements.ValueKind != JsonValueKind.Array)
+        {
+            return jobs;
+        }
+
+        foreach (var job in jobElements.EnumerateArray())
+        {
+            var jobUrl = GetString(job, "url");
+            jobs.Add(new DiscoveredJobResult
+            {
+                ExternalJobId = GetValueAsString(job, "id"),
+                Source = "Remotive",
+                CompanyName = GetString(job, "company_name"),
+                PositionTitle = GetString(job, "title"),
+                Location = GetString(job, "candidate_required_location"),
+                JobDescription = CleanHtml(GetString(job, "description")),
+                JobPostingUrl = jobUrl,
+                ApplyUrl = jobUrl,
+                Department = GetString(job, "category"),
+                EmploymentType = GetString(job, "job_type"),
+                WorkplaceType = "Remote",
+                SalaryText = GetString(job, "salary"),
+                PostedDate = ParseDate(GetString(job, "publication_date")),
+                IsVerifiedSource = false
+            });
+        }
+
+        return jobs;
+    }
+
+    private async Task<List<DiscoveredJobResult>> GetJobicyJobsAsync(
+        JobDiscoverySourceOptions source,
+        CancellationToken cancellationToken)
+    {
+        const string url =
+            "https://jobicy.com/api/v2/remote-jobs?count=100&geo=usa";
+
+        using var response = await httpClient.GetAsync(url, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(
+            cancellationToken);
+        using var document = await JsonDocument.ParseAsync(
+            stream,
+            cancellationToken: cancellationToken);
+
+        var jobs = new List<DiscoveredJobResult>();
+        if (!document.RootElement.TryGetProperty("jobs", out var jobElements)
+            || jobElements.ValueKind != JsonValueKind.Array)
+        {
+            return jobs;
+        }
+
+        foreach (var job in jobElements.EnumerateArray())
+        {
+            var jobUrl = GetString(job, "url");
+
+            jobs.Add(new DiscoveredJobResult
+            {
+                ExternalJobId = GetValueAsString(job, "id"),
+                Source = "Jobicy",
+                CompanyName = GetString(job, "companyName"),
+                PositionTitle = GetString(job, "jobTitle"),
+                Location = GetString(job, "jobGeo"),
+                Department = GetArrayText(job, "jobIndustry"),
+                JobDescription = FirstNonEmpty(
+                    CleanHtml(GetString(job, "jobDescription")),
+                    GetString(job, "jobExcerpt")),
+                JobPostingUrl = jobUrl,
+                ApplyUrl = jobUrl,
+                EmploymentType = GetArrayText(job, "jobType"),
+                WorkplaceType = "Remote",
+                ExperienceLevel = GetString(job, "jobLevel"),
+                SalaryText = ReadJobicySalary(job),
+                PostedDate = ParseDate(GetString(job, "pubDate")),
+                IsVerifiedSource = false
+            });
+        }
+
+        return jobs;
     }
 
     private async Task<List<DiscoveredJobResult>> GetAshbyJobsAsync(
@@ -336,30 +532,21 @@ public sealed class JobDiscoveryService
         return jobs;
     }
 
-    private static bool MatchesSearch(
+    private bool MatchesSearch(
         DiscoveredJobResult job,
-        JobDiscoverySearchRequest request)
+        JobDiscoverySearchRequest request,
+        SearchFilterContext filterContext)
     {
-        var searchableText = string.Join(
-            " ",
-            job.PositionTitle,
-            job.CompanyName,
-            job.Location,
-            job.Department,
-            job.JobDescription,
-            job.EmploymentType,
-            job.WorkplaceType);
+        job.RelevanceScore = searchEngine.Score(job, request.Keyword);
 
-        var keywordTerms = SplitSearchTerms(request.Keyword);
-        if (keywordTerms.Count > 0
-            && !keywordTerms.All(term => Contains(searchableText, term)))
+        if (!string.IsNullOrWhiteSpace(request.Keyword)
+            && job.RelevanceScore == 0)
         {
             return false;
         }
 
-        var locationTerms = SplitLocationTerms(request.Location);
-        if (locationTerms.Count > 0
-            && !locationTerms.Any(term =>
+        if (filterContext.LocationTerms.Count > 0
+            && !filterContext.LocationTerms.Any(term =>
                 Contains(job.Location, term)
                 || (term.Equals("remote", StringComparison.OrdinalIgnoreCase)
                     && job.WorkplaceType.Equals(
@@ -374,16 +561,15 @@ public sealed class JobDiscoveryService
             return false;
         }
 
-        if (request.PostedWithinDays.HasValue)
+        if (filterContext.PostedCutoffUtc.HasValue)
         {
             if (!job.PostedDate.HasValue)
             {
                 return false;
             }
 
-            var cutoff = DateTime.UtcNow.Date
-                .AddDays(-request.PostedWithinDays.Value);
-            if (job.PostedDate.Value.ToUniversalTime() < cutoff)
+            if (job.PostedDate.Value.ToUniversalTime()
+                < filterContext.PostedCutoffUtc.Value)
             {
                 return false;
             }
@@ -405,13 +591,43 @@ public sealed class JobDiscoveryService
             return false;
         }
 
-        var selectedSkills = request.Skills
-            .Where(skill => !string.IsNullOrWhiteSpace(skill))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        if (filterContext.ExperienceLevels.Count > 0
+            && !filterContext.ExperienceLevels.Contains(job.ExperienceLevel))
+        {
+            return false;
+        }
 
-        return selectedSkills.Count == 0
-               || selectedSkills.Any(skill => Contains(searchableText, skill));
+        return filterContext.SelectedSkills.Count == 0
+               || filterContext.SelectedSkills.Any(
+                   skill => searchEngine.Score(job, skill) > 0);
+    }
+
+    private static SearchFilterContext BuildFilterContext(
+        JobDiscoverySearchRequest request)
+    {
+        var experienceLevels = request.ExperienceLevels
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(request.ExperienceLevel))
+        {
+            experienceLevels.Add(request.ExperienceLevel);
+        }
+
+        DateTime? postedCutoffUtc = request.PostedWithinDays.HasValue
+            ? request.PostedWithinDays.Value == 1
+                ? DateTime.UtcNow.AddHours(-24)
+                : DateTime.UtcNow.AddDays(-request.PostedWithinDays.Value)
+            : null;
+
+        return new SearchFilterContext(
+            SplitLocationTerms(request.Location),
+            experienceLevels,
+            request.Skills
+                .Where(skill => !string.IsNullOrWhiteSpace(skill))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            postedCutoffUtc);
     }
 
     private static void NormalizeJob(DiscoveredJobResult job)
@@ -429,6 +645,121 @@ public sealed class JobDiscoveryService
         job.WorkplaceType = NormalizeWorkplaceType(
             job.WorkplaceType,
             combined);
+        var inferredExperienceLevel = NormalizeExperienceLevel(
+            job.PositionTitle,
+            job.JobDescription);
+
+        job.ExperienceLevel = inferredExperienceLevel == "Not specified"
+            ? NormalizeProvidedExperienceLevel(job.ExperienceLevel)
+            : inferredExperienceLevel;
+    }
+
+    private static string NormalizeExperienceLevel(
+        string? title,
+        string? description)
+    {
+        var titleText = title ?? string.Empty;
+        var combined = $"{titleText} {description}";
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(intern|internship|co-op|apprentice)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Internship";
+        }
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(manager|director|head|vice president|vp)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Manager";
+        }
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(principal|staff|lead|architect|distinguished)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Lead / Principal";
+        }
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(senior|sr\.?|level\s*[45]|iv|v)\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                combined,
+                @"\b([5-9]|1[0-9])\+?\s*(years|yrs)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Senior";
+        }
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(junior|jr\.?|entry|associate|new grad|graduate|level\s*1|\bi\b)\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                combined,
+                @"\b(0\s*[-–]\s*2|1\s*[-–]\s*2)\s*(years|yrs)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Entry level";
+        }
+
+        if (Regex.IsMatch(
+                titleText,
+                @"\b(mid|intermediate|level\s*[23]|ii|iii)\b",
+                RegexOptions.IgnoreCase)
+            || Regex.IsMatch(
+                combined,
+                @"\b([2-4]\s*[-–]\s*[3-6]|[2-4]\+)\s*(years|yrs)\b",
+                RegexOptions.IgnoreCase))
+        {
+            return "Mid level";
+        }
+
+        return "Not specified";
+    }
+
+    private static string NormalizeProvidedExperienceLevel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Equals("Any", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Not specified";
+        }
+
+        if (Regex.IsMatch(value, @"\b(intern|internship|student)\b", RegexOptions.IgnoreCase))
+        {
+            return "Internship";
+        }
+
+        if (Regex.IsMatch(value, @"\b(entry|junior|graduate)\b", RegexOptions.IgnoreCase))
+        {
+            return "Entry level";
+        }
+
+        if (Regex.IsMatch(value, @"\b(mid|intermediate)\b", RegexOptions.IgnoreCase))
+        {
+            return "Mid level";
+        }
+
+        if (Regex.IsMatch(value, @"\b(manager|director|head)\b", RegexOptions.IgnoreCase))
+        {
+            return "Manager";
+        }
+
+        if (Regex.IsMatch(value, @"\b(lead|principal|staff|architect)\b", RegexOptions.IgnoreCase))
+        {
+            return "Lead / Principal";
+        }
+
+        return Regex.IsMatch(value, @"\b(senior|sr\.?|experienced)\b", RegexOptions.IgnoreCase)
+            ? "Senior"
+            : "Not specified";
     }
 
     private static string NormalizeEmploymentType(string? value, string text)
@@ -544,6 +875,28 @@ public sealed class JobDiscoveryService
             job.Location.Trim());
     }
 
+    private static DiscoveredJobResult CloneJob(DiscoveredJobResult job)
+    {
+        return new DiscoveredJobResult
+        {
+            ExternalJobId = job.ExternalJobId,
+            Source = job.Source,
+            CompanyName = job.CompanyName,
+            PositionTitle = job.PositionTitle,
+            Location = job.Location,
+            Department = job.Department,
+            JobDescription = job.JobDescription,
+            JobPostingUrl = job.JobPostingUrl,
+            ApplyUrl = job.ApplyUrl,
+            EmploymentType = job.EmploymentType,
+            WorkplaceType = job.WorkplaceType,
+            ExperienceLevel = job.ExperienceLevel,
+            SalaryText = job.SalaryText,
+            PostedDate = job.PostedDate,
+            IsVerifiedSource = job.IsVerifiedSource
+        };
+    }
+
     private static string FriendlyError(Exception exception)
     {
         return exception is HttpRequestException httpException
@@ -580,6 +933,31 @@ public sealed class JobDiscoveryService
         return element.TryGetProperty(propertyName, out var property)
             ? property.ToString()
             : string.Empty;
+    }
+
+    private static string GetArrayText(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return string.Empty;
+        }
+
+        if (property.ValueKind == JsonValueKind.String)
+        {
+            return property.GetString() ?? string.Empty;
+        }
+
+        if (property.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            ", ",
+            property.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 
     private static string FirstNonEmpty(params string?[] values)
@@ -624,6 +1002,45 @@ public sealed class JobDiscoveryService
                 : string.Empty;
     }
 
+    private static string ReadJobicySalary(JsonElement job)
+    {
+        var minimum = GetValueAsString(job, "salaryMin");
+        var maximum = GetValueAsString(job, "salaryMax");
+        var currency = GetString(job, "salaryCurrency");
+        var period = GetString(job, "salaryPeriod");
+
+        if (string.IsNullOrWhiteSpace(minimum)
+            && string.IsNullOrWhiteSpace(maximum))
+        {
+            return string.Empty;
+        }
+
+        var range = string.IsNullOrWhiteSpace(minimum)
+            ? maximum
+            : string.IsNullOrWhiteSpace(maximum)
+                ? minimum
+                : $"{minimum}–{maximum}";
+
+        return string.Join(
+            " ",
+            new[] { currency, range, period }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static TimeSpan GetSourceCacheDuration(string? provider)
+    {
+        return provider?.Trim().ToLowerInvariant() switch
+        {
+            // Remotive requests no more than four refreshes per day.
+            "remotive" => TimeSpan.FromHours(6),
+
+            // Jobicy discourages polling more than once per hour.
+            "jobicy" => TimeSpan.FromHours(1),
+
+            _ => TimeSpan.FromMinutes(30)
+        };
+    }
+
     private static string GetAshbyDepartment(JsonElement job)
     {
         if (!job.TryGetProperty("department", out var department))
@@ -654,6 +1071,12 @@ public sealed class JobDiscoveryService
     private sealed record SourceLoadResult(
         List<DiscoveredJobResult> Jobs,
         string? Warning);
+
+    private sealed record SearchFilterContext(
+        IReadOnlyList<string> LocationTerms,
+        IReadOnlySet<string> ExperienceLevels,
+        IReadOnlyList<string> SelectedSkills,
+        DateTime? PostedCutoffUtc);
 }
 
 public sealed class JobDiscoverySourceOptions
@@ -671,6 +1094,8 @@ public sealed class JobDiscoverySearchRequest
     public int? PostedWithinDays { get; set; }
     public string EmploymentType { get; set; } = string.Empty;
     public string WorkplaceType { get; set; } = string.Empty;
+    public string ExperienceLevel { get; set; } = string.Empty;
+    public List<string> ExperienceLevels { get; set; } = new();
     public List<string> Skills { get; set; } = new();
     public bool UnitedStatesOnly { get; set; } = true;
     public string SortOrder { get; set; } = "newest";
@@ -693,6 +1118,7 @@ public sealed class JobDiscoveryResponse
 
 public sealed class DiscoveredJobResult
 {
+    public int RelevanceScore { get; set; }
     public string ExternalJobId { get; set; } = string.Empty;
     public string Source { get; set; } = string.Empty;
     public string CompanyName { get; set; } = string.Empty;
@@ -704,6 +1130,7 @@ public sealed class DiscoveredJobResult
     public string ApplyUrl { get; set; } = string.Empty;
     public string EmploymentType { get; set; } = string.Empty;
     public string WorkplaceType { get; set; } = string.Empty;
+    public string ExperienceLevel { get; set; } = string.Empty;
     public string SalaryText { get; set; } = string.Empty;
     public DateTime? PostedDate { get; set; }
     public bool IsVerifiedSource { get; set; }

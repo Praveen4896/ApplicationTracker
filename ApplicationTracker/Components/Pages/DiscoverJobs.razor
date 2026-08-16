@@ -1,6 +1,6 @@
 ﻿@page "/discover"
 @using ApplicationTracker.Services
-@inject JobDiscoveryService DiscoveryService
+@inject JobDiscoveryState SearchState
 @inject JobCaptureStore CaptureStore
 @inject NavigationManager Navigation
 
@@ -14,34 +14,37 @@
     </div>
 </header>
 
-<section class="panel discovery-search-panel">
+<section class="panel discovery-search-panel"
+         aria-busy="@(SearchState.IsFiltering || SearchState.IsLoadingCatalog)">
     <div class="discovery-primary-search">
         <label>
             <span>Job title, skill, or company</span>
-            <InputText @bind-Value="keyword"
-                       @onkeydown="HandleSearchKeyDown"
-                       placeholder=".NET developer, software engineer, data scientist…" />
+            <input @bind="SearchState.Keyword"
+                   @bind:event="oninput"
+                   @onkeydown="HandleSearchKeyDown"
+                   placeholder=".NET developer, software engineer, data scientist…" />
         </label>
 
         <label>
             <span>Location</span>
-            <InputText @bind-Value="location"
-                       @onkeydown="HandleSearchKeyDown"
-                       placeholder="Remote, Texas, New York…" />
+            <input @bind="SearchState.Location"
+                   @bind:event="oninput"
+                   @onkeydown="HandleSearchKeyDown"
+                   placeholder="Remote, Texas, New York…" />
         </label>
 
         <button type="button"
                 class="button primary"
-                disabled="@loading"
-                @onclick="NewSearchAsync">
-            @(loading ? "Searching…" : "Search jobs")
+                disabled="@SearchIsBusy"
+                @onclick="SearchAsync">
+            @SearchButtonText
         </button>
     </div>
 
     <div class="discovery-filter-grid">
         <label>
             <span>Date posted</span>
-            <select @bind="postedWithinValue">
+            <select @bind="SearchState.PostedWithinValue">
                 <option value="">Any time</option>
                 <option value="1">Last 24 hours</option>
                 <option value="7">Last 7 days</option>
@@ -51,7 +54,7 @@
 
         <label>
             <span>Employment type</span>
-            <select @bind="employmentType">
+            <select @bind="SearchState.EmploymentType">
                 <option value="">All types</option>
                 <option value="Full time">Full time</option>
                 <option value="Part time">Part time</option>
@@ -62,7 +65,7 @@
 
         <label>
             <span>Work model</span>
-            <select @bind="workplaceType">
+            <select @bind="SearchState.WorkplaceType">
                 <option value="">All work models</option>
                 <option value="Remote">Remote</option>
                 <option value="Hybrid">Hybrid</option>
@@ -72,27 +75,69 @@
 
         <label>
             <span>Sort by</span>
-            <select @bind="sortOrder">
+            <select @bind="SearchState.SortOrder">
                 <option value="newest">Newest first</option>
+                <option value="relevance">Most relevant</option>
                 <option value="company">Company</option>
                 <option value="title">Job title</option>
             </select>
         </label>
 
         <label class="discovery-us-filter">
-            <input type="checkbox" @bind="unitedStatesOnly" />
+            <input type="checkbox" @bind="SearchState.UnitedStatesOnly" />
             <span>United States only</span>
         </label>
     </div>
 
+    <div class="discovery-selection-row">
+        <div class="discovery-filter-field">
+            <span class="discovery-filter-label">Experience levels</span>
+
+            <details class="discovery-multiselect">
+                <summary>@ExperienceSummary</summary>
+
+                <div class="discovery-multiselect-menu">
+                    @foreach (var level in availableExperienceLevels)
+                    {
+                        <label>
+                            <input type="checkbox"
+                                   checked="@SearchState.SelectedExperienceLevels.Contains(level)"
+                                   @onchange="eventArgs => ToggleExperienceLevel(level, eventArgs.Value)" />
+                            <span>@level</span>
+                        </label>
+                    }
+                </div>
+            </details>
+        </div>
+
+        <div class="discovery-selected-summary" aria-live="polite">
+            @if (SearchState.SelectedExperienceLevels.Count > 0)
+            {
+                @foreach (var level in OrderedSelectedExperienceLevels)
+                {
+                    <button type="button"
+                            class="discovery-removable-chip"
+                            title="Remove @level"
+                            @onclick="() => RemoveExperienceLevel(level)">
+                        @level <span aria-hidden="true">×</span>
+                    </button>
+                }
+            }
+            else
+            {
+                <span>All experience levels</span>
+            }
+        </div>
+    </div>
+
     <fieldset class="discovery-skills">
-        <legend>Skills — select one or more</legend>
+        <legend>Skills — select one or more, then choose Search jobs</legend>
 
         @foreach (var skill in availableSkills)
         {
-            <label class="skill-filter @(selectedSkills.Contains(skill) ? "selected" : string.Empty)">
+            <label class="skill-filter @(SearchState.SelectedSkills.Contains(skill) ? "selected" : string.Empty)">
                 <input type="checkbox"
-                       checked="@selectedSkills.Contains(skill)"
+                       checked="@SearchState.SelectedSkills.Contains(skill)"
                        @onchange="eventArgs => ToggleSkill(skill, eventArgs.Value)" />
                 <span>@skill</span>
             </label>
@@ -100,334 +145,335 @@
     </fieldset>
 
     <div class="discovery-filter-actions">
+        <span class="discovery-filter-hint">
+            Filter selections are kept when you visit another page.
+        </span>
+
         <button type="button"
                 class="discovery-clear-button"
-                disabled="@loading"
+                disabled="@SearchIsBusy"
                 @onclick="ClearFiltersAsync">
             Clear all filters
         </button>
     </div>
 </section>
 
-@if (!string.IsNullOrWhiteSpace(errorMessage))
+@if (SearchState.IsFiltering)
+{
+    <div class="discovery-search-status" role="status" aria-live="assertive">
+        <span class="discovery-spinner" aria-hidden="true"></span>
+        <span>
+            <strong>Searching your cached job catalog…</strong>
+            <small>No employer sites are being downloaded again.</small>
+        </span>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(SearchState.ErrorMessage))
 {
     <section class="panel discovery-message error">
-        @errorMessage
+        @SearchState.ErrorMessage
     </section>
 }
 
-@if (warnings.Count > 0)
+@if (SearchState.Warnings.Count > 0)
 {
     <details class="panel discovery-warning">
         <summary>
-            @warnings.Count source(s) could not be loaded. Other sources are still shown.
+            @SearchState.Warnings.Count source(s) could not be loaded. Other sources are still shown.
         </summary>
 
-        @foreach (var warning in warnings)
+        @foreach (var warning in SearchState.Warnings)
         {
             <p>@warning</p>
         }
     </details>
 }
 
-@if (loading)
+@if (SearchState.IsLoadingCatalog && !SearchState.IsCatalogLoaded)
 {
-    <section class="panel empty discovery-loading">
-        <span>⌕</span>
-        <h3>Searching verified job sources…</h3>
-        <p>This can take a few seconds because several employer boards are being checked.</p>
+    <section class="panel empty discovery-loading" role="status" aria-live="polite">
+        <span class="discovery-spinner discovery-spinner-large" aria-hidden="true"></span>
+        <h3>Loading current job postings…</h3>
+        <p>The first load checks the configured sources. Later searches use the cached catalog.</p>
     </section>
 }
-else if (searchPerformed && jobs.Count == 0)
+else if (SearchState.IsCatalogLoaded && SearchState.TotalCount == 0)
 {
     <section class="panel empty">
         <span>⌕</span>
         <h3>No matching jobs found</h3>
-        <p>
-            Try a broader keyword, remove a skill, or change the date and location filters.
-        </p>
+        <p>Try a broader keyword, remove a skill, or change the date and location filters.</p>
     </section>
 }
-else if (jobs.Count > 0)
+else if (SearchState.CurrentJobs.Count > 0)
 {
-    <section class="discovery-results">
-        <div class="discovery-results-header">
-            <div>
-                <h2>@totalCount matching job(s)</h2>
-                <span>
-                    Showing @FirstResultNumber–@LastResultNumber from
-                    @successfulSourceCount of @sourceCount verified sources
-                </span>
+    <section class="discovery-results-container">
+        <div class="discovery-results @(SearchState.IsFiltering ? "is-updating" : string.Empty)">
+            <div class="discovery-results-header">
+                <div>
+                    <h2>@SearchState.TotalCount matching job(s)</h2>
+                    <span>
+                        Showing @FirstResultNumber–@LastResultNumber from
+                        @SearchState.SuccessfulSourceCount of @SearchState.SourceCount available sources
+                    </span>
+                </div>
+
+                <span>@SearchState.AllJobsLoaded active postings checked</span>
             </div>
 
-            <span>@allJobsLoaded active postings checked</span>
-        </div>
+            @foreach (var job in SearchState.CurrentJobs)
+            {
+                <article class="panel discovered-job-card" @key="job.JobPostingUrl">
+                    <div class="discovered-job-main">
+                        <div class="discovered-job-heading">
+                            <div>
+                                <h2>@job.PositionTitle</h2>
+                                <strong>@job.CompanyName</strong>
+                            </div>
 
-        @foreach (var job in jobs)
-        {
-            <article class="panel discovered-job-card">
-                <div class="discovered-job-main">
-                    <div class="discovered-job-heading">
-                        <div>
-                            <span class="verified-source">
-                                @(job.IsVerifiedSource ? "✓ Official ATS" : job.Source)
-                            </span>
-
-                            <h2>@job.PositionTitle</h2>
-                            <strong>@job.CompanyName</strong>
+                            @if (job.PostedDate.HasValue)
+                            {
+                                <time title="The date is supplied by the employer's ATS.">
+                                    Posted @job.PostedDate.Value.ToString("MMM d, yyyy")
+                                </time>
+                            }
+                            else
+                            {
+                                <time>Date unavailable</time>
+                            }
                         </div>
 
-                        @if (job.PostedDate.HasValue)
+                        <div class="discovered-job-facts">
+                            @if (!string.IsNullOrWhiteSpace(job.Location))
+                            {
+                                <span>⌖ @job.Location</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(job.WorkplaceType))
+                            {
+                                <span>@job.WorkplaceType</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(job.EmploymentType))
+                            {
+                                <span>@job.EmploymentType</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(job.Department))
+                            {
+                                <span>@job.Department</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(job.ExperienceLevel))
+                            {
+                                <span>@job.ExperienceLevel</span>
+                            }
+
+                            <span>@job.Source</span>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(job.JobDescription))
                         {
-                            <time title="The date is supplied by the employer's ATS.">
-                                Posted @job.PostedDate.Value.ToString("MMM d, yyyy")
-                            </time>
-                        }
-                        else
-                        {
-                            <time>Date unavailable</time>
+                            <p class="discovered-job-description">
+                                @ShortDescription(job.JobDescription)
+                            </p>
                         }
                     </div>
 
-                    <div class="discovered-job-facts">
-                        @if (!string.IsNullOrWhiteSpace(job.Location))
-                        {
-                            <span>⌖ @job.Location</span>
-                        }
+                    <div class="discovered-job-actions">
+                        <button type="button"
+                                class="button primary"
+                                @onclick="() => TrackJob(job)">
+                            Track application
+                        </button>
 
-                        @if (!string.IsNullOrWhiteSpace(job.WorkplaceType))
-                        {
-                            <span>@job.WorkplaceType</span>
-                        }
-
-                        @if (!string.IsNullOrWhiteSpace(job.EmploymentType))
-                        {
-                            <span>@job.EmploymentType</span>
-                        }
-
-                        @if (!string.IsNullOrWhiteSpace(job.Department))
-                        {
-                            <span>@job.Department</span>
-                        }
-
-                        <span>@job.Source</span>
+                        <a class="button secondary"
+                           href="@job.ApplyUrl"
+                           target="_blank"
+                           rel="noopener noreferrer">
+                            Open job ↗
+                        </a>
                     </div>
+                </article>
+            }
 
-                    @if (!string.IsNullOrWhiteSpace(job.JobDescription))
-                    {
-                        <p class="discovered-job-description">
-                            @ShortDescription(job.JobDescription)
-                        </p>
-                    }
-                </div>
-
-                <div class="discovered-job-actions">
+            @if (SearchState.TotalPages > 1)
+            {
+                <nav class="discovery-pagination" aria-label="Job search result pages">
                     <button type="button"
-                            class="button primary"
-                            @onclick="() => TrackJob(job)">
-                        Track application
+                            class="button secondary"
+                            disabled="@(SearchState.CurrentPage <= 1)"
+                            @onclick="PreviousPage">
+                        ← Previous
                     </button>
 
-                    <a class="button secondary"
-                       href="@job.ApplyUrl"
-                       target="_blank"
-                       rel="noopener noreferrer">
-                        Open job ↗
-                    </a>
-                </div>
-            </article>
-        }
+                    <div class="discovery-page-numbers">
+                        @{ var previousVisiblePage = 0; }
 
-        @if (totalPages > 1)
-        {
-            <nav class="discovery-pagination" aria-label="Job search result pages">
-                <button type="button"
-                        class="button secondary"
-                        disabled="@(loading || currentPage <= 1)"
-                        @onclick="PreviousPageAsync">
-                    ← Previous
-                </button>
+                        @foreach (var pageNumber in GetVisiblePageNumbers())
+                        {
+                            @if (previousVisiblePage > 0
+                                && pageNumber - previousVisiblePage > 1)
+                            {
+                                <span class="discovery-page-ellipsis">…</span>
+                            }
 
-                <span>Page @currentPage of @totalPages</span>
+                            <button type="button"
+                                    class="discovery-page-button @(pageNumber == SearchState.CurrentPage ? "active" : string.Empty)"
+                                    aria-current="@(pageNumber == SearchState.CurrentPage ? "page" : null)"
+                                    @onclick="() => GoToPage(pageNumber)">
+                                @pageNumber
+                            </button>
 
-                <button type="button"
-                        class="button secondary"
-                        disabled="@(loading || currentPage >= totalPages)"
-                        @onclick="NextPageAsync">
-                    Next →
-                </button>
-            </nav>
-        }
+                                previousVisiblePage = pageNumber;
+                        }
+                    </div>
+
+                    <button type="button"
+                            class="button secondary"
+                            disabled="@(SearchState.CurrentPage >= SearchState.TotalPages)"
+                            @onclick="NextPage">
+                        Next →
+                    </button>
+                </nav>
+            }
+        </div>
     </section>
 }
 
 @code {
     private readonly string[] availableSkills =
     {
-        ".NET",
-        "C#",
-        "Java",
-        "Python",
-        "JavaScript",
-        "TypeScript",
-        "React",
-        "Angular",
-        "SQL",
-        "Azure",
-        "AWS",
-        "Docker",
-        "Kubernetes"
+        ".NET", "C#", "Java", "Python", "JavaScript", "TypeScript",
+        "React", "Angular", "SQL", "Azure", "AWS", "Docker", "Kubernetes"
     };
 
-    private readonly HashSet<string> selectedSkills =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly string[] availableExperienceLevels =
+    {
+        "Internship", "Entry level", "Mid level", "Senior",
+        "Lead / Principal", "Manager", "Not specified"
+    };
 
-    private string keyword = string.Empty;
-    private string location = string.Empty;
-    private string postedWithinValue = string.Empty;
-    private string employmentType = string.Empty;
-    private string workplaceType = string.Empty;
-    private string sortOrder = "newest";
-    private bool unitedStatesOnly = true;
+    private bool SearchIsBusy =>
+        SearchState.IsLoadingCatalog || SearchState.IsFiltering;
 
-    private bool loading;
-    private bool searchPerformed;
-    private string? errorMessage;
-    private List<DiscoveredJobResult> jobs = new();
-    private List<string> warnings = new();
+    private string SearchButtonText => SearchState.IsLoadingCatalog
+        ? "Loading jobs…"
+        : SearchState.IsFiltering
+            ? "Searching…"
+            : "Search jobs";
 
-    private int currentPage = 1;
-    private int pageSize = 20;
-    private int totalCount;
-    private int totalPages = 1;
-    private int sourceCount;
-    private int successfulSourceCount;
-    private int allJobsLoaded;
+    private string ExperienceSummary => SearchState.SelectedExperienceLevels.Count switch
+    {
+        0 => "All experience levels",
+        1 => SearchState.SelectedExperienceLevels.First(),
+        var count => $"{count} levels selected"
+    };
 
-    private int FirstResultNumber =>
-        totalCount == 0 ? 0 : ((currentPage - 1) * pageSize) + 1;
+    private IEnumerable<string> OrderedSelectedExperienceLevels =>
+        availableExperienceLevels.Where(SearchState.SelectedExperienceLevels.Contains);
+
+    private int FirstResultNumber => SearchState.TotalCount == 0
+        ? 0
+        : ((SearchState.CurrentPage - 1) * SearchState.PageSize) + 1;
 
     private int LastResultNumber =>
-        Math.Min(currentPage * pageSize, totalCount);
+        Math.Min(SearchState.CurrentPage * SearchState.PageSize, SearchState.TotalCount);
 
-    protected override Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync()
     {
-        return SearchAsync();
-    }
-
-    private async Task NewSearchAsync()
-    {
-        currentPage = 1;
-        await SearchAsync();
+        await SearchState.EnsureCatalogLoadedAsync();
     }
 
     private async Task SearchAsync()
     {
-        loading = true;
-        searchPerformed = true;
-        errorMessage = null;
-        jobs.Clear();
-        warnings.Clear();
-
-        try
-        {
-            int? postedWithinDays = int.TryParse(
-                postedWithinValue,
-                out var parsedDays)
-                    ? parsedDays
-                    : null;
-
-            var response = await DiscoveryService.SearchAsync(
-                new JobDiscoverySearchRequest
-                {
-                    Keyword = keyword,
-                    Location = location,
-                    PostedWithinDays = postedWithinDays,
-                    EmploymentType = employmentType,
-                    WorkplaceType = workplaceType,
-                    Skills = selectedSkills.ToList(),
-                    UnitedStatesOnly = unitedStatesOnly,
-                    SortOrder = sortOrder,
-                    Page = currentPage,
-                    PageSize = pageSize
-                });
-
-            jobs = response.Jobs;
-            warnings = response.Warnings;
-            totalCount = response.TotalCount;
-            currentPage = response.Page;
-            pageSize = response.PageSize;
-            totalPages = response.TotalPages;
-            sourceCount = response.SourceCount;
-            successfulSourceCount = response.SuccessfulSourceCount;
-            allJobsLoaded = response.AllJobsLoaded;
-        }
-        catch (Exception)
-        {
-            errorMessage =
-                "The job search could not be completed. Please try again.";
-        }
-        finally
-        {
-            loading = false;
-        }
-    }
-
-    private async Task PreviousPageAsync()
-    {
-        if (currentPage <= 1)
-        {
-            return;
-        }
-
-        currentPage--;
-        await SearchAsync();
-    }
-
-    private async Task NextPageAsync()
-    {
-        if (currentPage >= totalPages)
-        {
-            return;
-        }
-
-        currentPage++;
-        await SearchAsync();
-    }
-
-    private void ToggleSkill(string skill, object? value)
-    {
-        if (value is bool isChecked && isChecked)
-        {
-            selectedSkills.Add(skill);
-        }
-        else
-        {
-            selectedSkills.Remove(skill);
-        }
+        var searchTask = SearchState.ApplyFiltersAsync();
+        await InvokeAsync(StateHasChanged);
+        await searchTask;
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task ClearFiltersAsync()
     {
-        keyword = string.Empty;
-        location = string.Empty;
-        postedWithinValue = string.Empty;
-        employmentType = string.Empty;
-        workplaceType = string.Empty;
-        sortOrder = "newest";
-        unitedStatesOnly = true;
-        selectedSkills.Clear();
-        currentPage = 1;
-
+        SearchState.ClearFilters();
         await SearchAsync();
     }
 
     private async Task HandleSearchKeyDown(KeyboardEventArgs eventArgs)
     {
-        if (eventArgs.Key == "Enter")
+        if (eventArgs.Key == "Enter" && !SearchIsBusy)
         {
-            await NewSearchAsync();
+            await SearchAsync();
         }
+    }
+
+    private void ToggleSkill(string skill, object? value)
+    {
+        SetSelectedValue(SearchState.SelectedSkills, skill, IsChecked(value));
+    }
+
+    private void ToggleExperienceLevel(string level, object? value)
+    {
+        SetSelectedValue(
+            SearchState.SelectedExperienceLevels,
+            level,
+            IsChecked(value));
+    }
+
+    private void RemoveExperienceLevel(string level)
+    {
+        SearchState.SelectedExperienceLevels.Remove(level);
+    }
+
+    private static bool IsChecked(object? value) =>
+        value is bool isChecked && isChecked;
+
+    private static void SetSelectedValue(
+        HashSet<string> selectedValues,
+        string value,
+        bool isSelected)
+    {
+        if (isSelected)
+        {
+            selectedValues.Add(value);
+        }
+        else
+        {
+            selectedValues.Remove(value);
+        }
+    }
+
+    private void GoToPage(int pageNumber)
+    {
+        SearchState.GoToPage(pageNumber);
+    }
+
+    private void PreviousPage()
+    {
+        GoToPage(SearchState.CurrentPage - 1);
+    }
+
+    private void NextPage()
+    {
+        GoToPage(SearchState.CurrentPage + 1);
+    }
+
+    private IReadOnlyList<int> GetVisiblePageNumbers()
+    {
+        var pages = new SortedSet<int> { 1, SearchState.TotalPages };
+
+        for (var page = SearchState.CurrentPage - 2;
+             page <= SearchState.CurrentPage + 2;
+             page++)
+        {
+            if (page >= 1 && page <= SearchState.TotalPages)
+            {
+                pages.Add(page);
+            }
+        }
+
+        return pages.ToList();
     }
 
     private void TrackJob(DiscoveredJobResult job)

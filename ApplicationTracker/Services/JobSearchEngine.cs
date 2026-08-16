@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -6,6 +7,12 @@ namespace ApplicationTracker.Services;
 
 public sealed class JobSearchEngine
 {
+    private readonly ConcurrentDictionary<string, IndexedJob> jobIndex =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly ConcurrentDictionary<string, ParsedQuery> queryIndex =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private static readonly Regex TokenRegex =
         new(@"[a-z0-9+#.]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -36,28 +43,24 @@ public sealed class JobSearchEngine
             return 1;
         }
 
-        var parsedQuery = ParseQuery(query);
+        var parsedQuery = queryIndex.GetOrAdd(query.Trim(), ParseQuery);
         if (parsedQuery.Terms.Count == 0 && parsedQuery.Phrases.Count == 0)
         {
             return 1;
         }
 
-        var title = Normalize(job.PositionTitle);
-        var company = Normalize(job.CompanyName);
-        var department = Normalize(job.Department);
-        var description = Normalize(job.JobDescription);
-        var metadata = Normalize(string.Join(
-            " ",
-            job.Location,
-            job.EmploymentType,
-            job.WorkplaceType,
-            job.Source));
+        var indexed = GetIndexedJob(job);
+        var title = indexed.Title;
+        var company = indexed.Company;
+        var department = indexed.Department;
+        var description = indexed.Description;
+        var metadata = indexed.Metadata;
 
-        var titleTokens = Tokenize(title);
-        var companyTokens = Tokenize(company);
-        var departmentTokens = Tokenize(department);
-        var descriptionTokens = Tokenize(description);
-        var metadataTokens = Tokenize(metadata);
+        var titleTokens = indexed.TitleTokens;
+        var companyTokens = indexed.CompanyTokens;
+        var departmentTokens = indexed.DepartmentTokens;
+        var descriptionTokens = indexed.DescriptionTokens;
+        var metadataTokens = indexed.MetadataTokens;
 
         var score = 0;
         var matchedRequiredConcepts = 0;
@@ -127,6 +130,48 @@ public sealed class JobSearchEngine
         }
 
         return score;
+    }
+
+    public void Prepare(IEnumerable<DiscoveredJobResult> jobs)
+    {
+        foreach (var job in jobs)
+        {
+            _ = GetIndexedJob(job);
+        }
+    }
+
+    private IndexedJob GetIndexedJob(DiscoveredJobResult job)
+    {
+        var key = !string.IsNullOrWhiteSpace(job.JobPostingUrl)
+            ? job.JobPostingUrl
+            : $"{job.Source}:{job.ExternalJobId}:{job.PositionTitle}";
+
+        return jobIndex.GetOrAdd(key, _ =>
+        {
+            var title = Normalize(job.PositionTitle);
+            var company = Normalize(job.CompanyName);
+            var department = Normalize(job.Department);
+            var description = Normalize(job.JobDescription);
+            var metadata = Normalize(string.Join(
+                " ",
+                job.Location,
+                job.EmploymentType,
+                job.WorkplaceType,
+                job.ExperienceLevel,
+                job.Source));
+
+            return new IndexedJob(
+                title,
+                company,
+                department,
+                description,
+                metadata,
+                Tokenize(title),
+                Tokenize(company),
+                Tokenize(department),
+                Tokenize(description),
+                Tokenize(metadata));
+        });
     }
 
     private static ParsedQuery ParseQuery(string query)
@@ -297,6 +342,10 @@ public sealed class JobSearchEngine
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
 
+        value = Regex.Replace(value, @"\basp\s+dot\s+net\b", "asp.net", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\bdot\s*net\b", ".net", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, @"\bc\s*sharp\b", "c#", RegexOptions.IgnoreCase);
+
         var decomposed = value.Normalize(NormalizationForm.FormD);
         var builder = new StringBuilder(decomposed.Length);
 
@@ -383,4 +432,16 @@ public sealed class JobSearchEngine
     private sealed record ParsedQuery(
         IReadOnlyList<string> Terms,
         IReadOnlyList<string> Phrases);
+
+    private sealed record IndexedJob(
+        string Title,
+        string Company,
+        string Department,
+        string Description,
+        string Metadata,
+        IReadOnlySet<string> TitleTokens,
+        IReadOnlySet<string> CompanyTokens,
+        IReadOnlySet<string> DepartmentTokens,
+        IReadOnlySet<string> DescriptionTokens,
+        IReadOnlySet<string> MetadataTokens);
 }

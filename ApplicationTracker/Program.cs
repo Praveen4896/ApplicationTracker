@@ -31,6 +31,8 @@ builder.Services.AddHttpClient<JobDiscoveryService>(client =>
     client.DefaultRequestHeaders.UserAgent.ParseAdd(
         "ApplicationTracker/1.0");
 });
+builder.Services.AddHostedService<JobDiscoveryWarmupService>();
+builder.Services.AddScoped<JobDiscoveryState>();
 
 builder.Services.AddSingleton<JobCaptureStore>();
 
