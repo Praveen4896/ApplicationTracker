@@ -160,6 +160,64 @@ public sealed class JobDiscoveryService
         return response;
     }
 
+    public async Task<DiscoveredJobResult> GetFullDetailsAsync(
+        DiscoveredJobResult job,
+        CancellationToken cancellationToken = default)
+    {
+        var completeJob = CloneJob(job);
+
+        if (!job.Source.Equals(
+                "SmartRecruiters",
+                StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(job.SourceIdentifier)
+            || string.IsNullOrWhiteSpace(job.ExternalJobId))
+        {
+            return completeJob;
+        }
+
+        try
+        {
+            var url =
+                "https://api.smartrecruiters.com/v1/companies/"
+                + Uri.EscapeDataString(job.SourceIdentifier)
+                + "/postings/"
+                + Uri.EscapeDataString(job.ExternalJobId);
+
+            using var response = await httpClient.GetAsync(
+                url,
+                cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return completeJob;
+            }
+
+            await using var stream =
+                await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken);
+
+            ApplySmartRecruitersDetails(
+                completeJob,
+                document.RootElement);
+            NormalizeJob(completeJob);
+
+            return completeJob;
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // The summary still contains a working employer link and enough
+            // information to create a tracked application.
+            return completeJob;
+        }
+    }
+
     private async Task<SourceLoadResult> LoadSourceSafelyAsync(
         JobDiscoverySourceOptions source,
         CancellationToken cancellationToken)
@@ -204,6 +262,9 @@ public sealed class JobDiscoveryService
                     "ashby" => await GetAshbyJobsAsync(source, sourceToken),
                     "greenhouse" => await GetGreenhouseJobsAsync(source, sourceToken),
                     "lever" => await GetLeverJobsAsync(source, sourceToken),
+                    "smartrecruiters" => await GetSmartRecruitersJobsAsync(
+                        source,
+                        sourceToken),
                     "remotive" => await GetRemotiveJobsAsync(source, sourceToken),
                     "jobicy" => await GetJobicyJobsAsync(source, sourceToken),
                     _ => throw new InvalidOperationException(
@@ -343,6 +404,107 @@ public sealed class JobDiscoveryService
                 PostedDate = ParseDate(GetString(job, "pubDate")),
                 IsVerifiedSource = false
             });
+        }
+
+        return jobs;
+    }
+
+    private async Task<List<DiscoveredJobResult>> GetSmartRecruitersJobsAsync(
+        JobDiscoverySourceOptions source,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 100;
+        var maximumPages = Math.Clamp(source.MaximumPages, 1, 10);
+        var jobs = new List<DiscoveredJobResult>();
+
+        for (var page = 0; page < maximumPages; page++)
+        {
+            var offset = page * pageSize;
+            var url =
+                "https://api.smartrecruiters.com/v1/companies/"
+                + Uri.EscapeDataString(source.BoardIdentifier)
+                + "/postings?destination=PUBLIC&country=us"
+                + $"&limit={pageSize}&offset={offset}";
+
+            using var response = await httpClient.GetAsync(
+                url,
+                cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            await using var stream =
+                await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken);
+
+            if (!document.RootElement.TryGetProperty(
+                    "content",
+                    out var jobElements)
+                || jobElements.ValueKind != JsonValueKind.Array)
+            {
+                break;
+            }
+
+            foreach (var job in jobElements.EnumerateArray())
+            {
+                var externalJobId = FirstNonEmpty(
+                    GetString(job, "id"),
+                    GetString(job, "uuid"));
+                var title = GetString(job, "name");
+                var companyName = ReadNestedLabel(job, "company", "name");
+                var locationText = ReadSmartRecruitersLocation(job);
+                var department = FirstNonEmpty(
+                    ReadNestedLabel(job, "department", "label"),
+                    ReadNestedLabel(job, "function", "label"));
+                var employmentType =
+                    ReadNestedLabel(job, "typeOfEmployment", "label");
+                var experienceLevel =
+                    ReadNestedLabel(job, "experienceLevel", "label");
+                var workplaceType =
+                    ReadSmartRecruitersWorkplaceType(job);
+                var postingUrl = BuildSmartRecruitersPostingUrl(
+                    source.BoardIdentifier,
+                    externalJobId,
+                    title);
+
+                jobs.Add(new DiscoveredJobResult
+                {
+                    ExternalJobId = externalJobId,
+                    Source = "SmartRecruiters",
+                    SourceIdentifier = source.BoardIdentifier,
+                    CompanyName = FirstNonEmpty(
+                        companyName,
+                        source.CompanyName),
+                    PositionTitle = title,
+                    Location = locationText,
+                    Department = department,
+                    JobDescription = BuildSmartRecruitersSummary(
+                        title,
+                        FirstNonEmpty(companyName, source.CompanyName),
+                        locationText,
+                        department,
+                        employmentType,
+                        experienceLevel),
+                    JobPostingUrl = postingUrl,
+                    ApplyUrl = postingUrl,
+                    EmploymentType = employmentType,
+                    WorkplaceType = workplaceType,
+                    ExperienceLevel = experienceLevel,
+                    PostedDate = ParseDate(GetString(job, "releasedDate")),
+                    IsVerifiedSource = true
+                });
+            }
+
+            var totalFound = GetInteger(
+                document.RootElement,
+                "totalFound");
+            var received = jobElements.GetArrayLength();
+
+            if (received < pageSize
+                || (totalFound > 0 && offset + received >= totalFound))
+            {
+                break;
+            }
         }
 
         return jobs;
@@ -530,6 +692,244 @@ public sealed class JobDiscoveryService
         }
 
         return jobs;
+    }
+
+    private static void ApplySmartRecruitersDetails(
+        DiscoveredJobResult job,
+        JsonElement details)
+    {
+        var companyName = ReadNestedLabel(details, "company", "name");
+        var location = ReadSmartRecruitersLocation(details);
+        var department = FirstNonEmpty(
+            ReadNestedLabel(details, "department", "label"),
+            ReadNestedLabel(details, "function", "label"));
+        var employmentType =
+            ReadNestedLabel(details, "typeOfEmployment", "label");
+        var experienceLevel =
+            ReadNestedLabel(details, "experienceLevel", "label");
+        var workplaceType = ReadSmartRecruitersWorkplaceType(details);
+
+        job.CompanyName = FirstNonEmpty(companyName, job.CompanyName);
+        job.PositionTitle = FirstNonEmpty(
+            GetString(details, "name"),
+            job.PositionTitle);
+        job.Location = FirstNonEmpty(location, job.Location);
+        job.Department = FirstNonEmpty(department, job.Department);
+        job.EmploymentType = FirstNonEmpty(
+            employmentType,
+            job.EmploymentType);
+        job.ExperienceLevel = FirstNonEmpty(
+            experienceLevel,
+            job.ExperienceLevel);
+        job.WorkplaceType = FirstNonEmpty(
+            workplaceType,
+            job.WorkplaceType);
+        job.PostedDate = ParseDate(GetString(details, "releasedDate"))
+            ?? job.PostedDate;
+        job.JobPostingUrl = FirstNonEmpty(
+            GetString(details, "postingUrl"),
+            job.JobPostingUrl);
+        job.ApplyUrl = FirstNonEmpty(
+            GetString(details, "applyUrl"),
+            job.ApplyUrl,
+            job.JobPostingUrl);
+
+        if (details.TryGetProperty("jobAd", out var jobAd)
+            && jobAd.ValueKind == JsonValueKind.Object
+            && jobAd.TryGetProperty("sections", out var sections)
+            && sections.ValueKind == JsonValueKind.Object)
+        {
+            var descriptionParts = new[]
+            {
+                BuildSmartRecruitersSection(
+                    sections,
+                    "companyDescription",
+                    "About the company"),
+                BuildSmartRecruitersSection(
+                    sections,
+                    "jobDescription",
+                    "Job description"),
+                BuildSmartRecruitersSection(
+                    sections,
+                    "qualifications",
+                    "Qualifications"),
+                BuildSmartRecruitersSection(
+                    sections,
+                    "additionalInformation",
+                    "Additional information")
+            };
+
+            var fullDescription = string.Join(
+                Environment.NewLine + Environment.NewLine,
+                descriptionParts.Where(part =>
+                    !string.IsNullOrWhiteSpace(part)));
+
+            job.JobDescription = FirstNonEmpty(
+                fullDescription,
+                job.JobDescription);
+        }
+    }
+
+    private static string ReadSmartRecruitersLocation(JsonElement job)
+    {
+        if (!job.TryGetProperty("location", out var location)
+            || location.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        var country = GetString(location, "country");
+        if (country.Equals("us", StringComparison.OrdinalIgnoreCase)
+            || country.Equals("usa", StringComparison.OrdinalIgnoreCase))
+        {
+            country = "United States";
+        }
+
+        return string.Join(
+            ", ",
+            new[]
+            {
+                GetString(location, "city"),
+                GetString(location, "region"),
+                country
+            }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static string ReadSmartRecruitersWorkplaceType(JsonElement job)
+    {
+        var locationType = FirstNonEmpty(
+            GetString(job, "locationType"),
+            ReadNestedLabel(job, "locationType", "label"));
+
+        if (!string.IsNullOrWhiteSpace(locationType))
+        {
+            return locationType;
+        }
+
+        if (job.TryGetProperty("location", out var location)
+            && location.ValueKind == JsonValueKind.Object
+            && location.TryGetProperty("remote", out var remote)
+            && remote.ValueKind == JsonValueKind.True)
+        {
+            return "Remote";
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadNestedLabel(
+        JsonElement element,
+        string objectName,
+        string propertyName)
+    {
+        return element.TryGetProperty(objectName, out var nested)
+               && nested.ValueKind == JsonValueKind.Object
+            ? GetString(nested, propertyName)
+            : string.Empty;
+    }
+
+    private static string BuildSmartRecruitersSummary(
+        string title,
+        string companyName,
+        string location,
+        string department,
+        string employmentType,
+        string experienceLevel)
+    {
+        var facts = new[]
+        {
+            string.IsNullOrWhiteSpace(title)
+                ? string.Empty
+                : $"{title} at {companyName}.",
+            string.IsNullOrWhiteSpace(location)
+                ? string.Empty
+                : $"Location: {location}",
+            string.IsNullOrWhiteSpace(department)
+                ? string.Empty
+                : $"Department: {department}",
+            string.IsNullOrWhiteSpace(employmentType)
+                ? string.Empty
+                : $"Employment type: {employmentType}",
+            string.IsNullOrWhiteSpace(experienceLevel)
+                ? string.Empty
+                : $"Experience level: {experienceLevel}"
+        };
+
+        return string.Join(
+            Environment.NewLine,
+            facts.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static string BuildSmartRecruitersPostingUrl(
+        string companyIdentifier,
+        string postingId,
+        string title)
+    {
+        var slug = Regex.Replace(
+                WebUtility.HtmlDecode(title ?? string.Empty),
+                @"[^A-Za-z0-9]+",
+                "-")
+            .Trim('-');
+
+        if (string.IsNullOrWhiteSpace(slug))
+        {
+            slug = "job";
+        }
+
+        return "https://jobs.smartrecruiters.com/"
+               + Uri.EscapeDataString(companyIdentifier)
+               + "/"
+               + Uri.EscapeDataString(postingId)
+               + "-"
+               + slug;
+    }
+
+    private static string BuildDescriptionSection(
+        string heading,
+        string html)
+    {
+        var text = CleanHtml(html);
+        return string.IsNullOrWhiteSpace(text)
+            ? string.Empty
+            : heading + Environment.NewLine + text;
+    }
+
+    private static string BuildSmartRecruitersSection(
+        JsonElement sections,
+        string sectionName,
+        string fallbackHeading)
+    {
+        if (!sections.TryGetProperty(sectionName, out var section)
+            || section.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        return BuildDescriptionSection(
+            FirstNonEmpty(
+                GetString(section, "title"),
+                fallbackHeading),
+            GetString(section, "text"));
+    }
+
+    private static int GetInteger(
+        JsonElement element,
+        string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return 0;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out var number))
+        {
+            return number;
+        }
+
+        return int.TryParse(property.ToString(), out number)
+            ? number
+            : 0;
     }
 
     private bool MatchesSearch(
@@ -881,6 +1281,7 @@ public sealed class JobDiscoveryService
         {
             ExternalJobId = job.ExternalJobId,
             Source = job.Source,
+            SourceIdentifier = job.SourceIdentifier,
             CompanyName = job.CompanyName,
             PositionTitle = job.PositionTitle,
             Location = job.Location,
@@ -1084,6 +1485,7 @@ public sealed class JobDiscoverySourceOptions
     public string CompanyName { get; set; } = string.Empty;
     public string Provider { get; set; } = string.Empty;
     public string BoardIdentifier { get; set; } = string.Empty;
+    public int MaximumPages { get; set; } = 1;
     public bool Enabled { get; set; } = true;
 }
 
@@ -1121,6 +1523,7 @@ public sealed class DiscoveredJobResult
     public int RelevanceScore { get; set; }
     public string ExternalJobId { get; set; } = string.Empty;
     public string Source { get; set; } = string.Empty;
+    public string SourceIdentifier { get; set; } = string.Empty;
     public string CompanyName { get; set; } = string.Empty;
     public string PositionTitle { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;

@@ -1,6 +1,7 @@
 ﻿@page "/discover"
 @using ApplicationTracker.Services
 @inject JobDiscoveryState SearchState
+@inject JobDiscoveryService DiscoveryService
 @inject JobCaptureStore CaptureStore
 @inject NavigationManager Navigation
 
@@ -145,10 +146,6 @@
     </fieldset>
 
     <div class="discovery-filter-actions">
-        <span class="discovery-filter-hint">
-            Filter selections are kept when you visit another page.
-        </span>
-
         <button type="button"
                 class="discovery-clear-button"
                 disabled="@SearchIsBusy"
@@ -162,10 +159,7 @@
 {
     <div class="discovery-search-status" role="status" aria-live="assertive">
         <span class="discovery-spinner" aria-hidden="true"></span>
-        <span>
-            <strong>Searching your cached job catalog…</strong>
-            <small>No employer sites are being downloaded again.</small>
-        </span>
+        <strong>Searching…</strong>
     </div>
 }
 
@@ -195,7 +189,7 @@
     <section class="panel empty discovery-loading" role="status" aria-live="polite">
         <span class="discovery-spinner discovery-spinner-large" aria-hidden="true"></span>
         <h3>Loading current job postings…</h3>
-        <p>The first load checks the configured sources. Later searches use the cached catalog.</p>
+        <p>Please wait while current postings are loaded.</p>
     </section>
 }
 else if (SearchState.IsCatalogLoaded && SearchState.TotalCount == 0)
@@ -284,8 +278,9 @@ else if (SearchState.CurrentJobs.Count > 0)
                     <div class="discovered-job-actions">
                         <button type="button"
                                 class="button primary"
-                                @onclick="() => TrackJob(job)">
-                            Track application
+                                disabled="@(trackingJobKey is not null)"
+                                @onclick="() => TrackJobAsync(job)">
+                            @(IsTracking(job) ? "Preparing…" : "Track application")
                         </button>
 
                         <a class="button secondary"
@@ -354,6 +349,8 @@ else if (SearchState.CurrentJobs.Count > 0)
         "Internship", "Entry level", "Mid level", "Senior",
         "Lead / Principal", "Manager", "Not specified"
     };
+
+    private string? trackingJobKey;
 
     private bool SearchIsBusy =>
         SearchState.IsLoadingCatalog || SearchState.IsFiltering;
@@ -476,25 +473,42 @@ else if (SearchState.CurrentJobs.Count > 0)
         return pages.ToList();
     }
 
-    private void TrackJob(DiscoveredJobResult job)
+    private async Task TrackJobAsync(DiscoveredJobResult job)
     {
-        var token = CaptureStore.Add(new JobCaptureRequest
-        {
-            Url = job.JobPostingUrl,
-            PageTitle = job.PositionTitle,
-            PositionTitle = job.PositionTitle,
-            CompanyName = job.CompanyName,
-            Location = job.Location,
-            JobId = job.ExternalJobId,
-            Source = $"{job.Source} - {job.CompanyName}",
-            RenderedText = job.JobDescription,
-            CapturedAtUtc = DateTime.UtcNow
-        });
+        trackingJobKey = GetTrackingKey(job);
 
-        Navigation.NavigateTo(
-            "/applications/new"
-            + $"?captureToken={Uri.EscapeDataString(token)}");
+        try
+        {
+            var completeJob = await DiscoveryService.GetFullDetailsAsync(job);
+
+            var token = CaptureStore.Add(new JobCaptureRequest
+            {
+                Url = completeJob.JobPostingUrl,
+                PageTitle = completeJob.PositionTitle,
+                PositionTitle = completeJob.PositionTitle,
+                CompanyName = completeJob.CompanyName,
+                Location = completeJob.Location,
+                JobId = completeJob.ExternalJobId,
+                Source = $"{completeJob.Source} - {completeJob.CompanyName}",
+                RenderedText = completeJob.JobDescription,
+                CapturedAtUtc = DateTime.UtcNow
+            });
+
+            Navigation.NavigateTo(
+                "/applications/new"
+                + $"?captureToken={Uri.EscapeDataString(token)}");
+        }
+        finally
+        {
+            trackingJobKey = null;
+        }
     }
+
+    private bool IsTracking(DiscoveredJobResult job) =>
+        trackingJobKey == GetTrackingKey(job);
+
+    private static string GetTrackingKey(DiscoveredJobResult job) =>
+        $"{job.Source}:{job.SourceIdentifier}:{job.ExternalJobId}";
 
     private static string ShortDescription(string description)
     {
